@@ -40,3 +40,36 @@ anomalies = result[result["suspicious"]]
 if not anomalies.empty:
     plot_window(anomalies.index[0], result, windows)
 ```
+
+## Complete runnable example
+
+Install the project and run the example from the repository root:
+
+```bash
+python -m pip install -e .
+python examples/basic_usage.py
+```
+
+The example creates a reproducible signal with a slowly drifting mean, missing
+timestamps, NaNs, an invalid quality flag, a duplicate timestamp, and one
+artificial energy anomaly. It prints the window metadata and writes the first
+suspicious window to `energy_anomaly_example.png`. Use `--show` to display the
+figure interactively or `--output path/to/figure.png` to select another output.
+
+The complete source is available in [`examples/basic_usage.py`](examples/basic_usage.py).
+
+### Using suspicious windows in the next pipeline stage
+
+The result index is the key of the separate `windows` dictionary. Therefore no
+NumPy arrays are stored inside DataFrame cells:
+
+```python
+for window_id in result.index[result["suspicious"]]:
+    item = windows[window_id]
+    regularly_sampled_signal = item.signal
+    regularly_sampled_time = item.time
+    genuinely_observed = item.observed_mask
+    interpolated = item.interpolated_mask
+
+    # Later: send regularly_sampled_signal to the MSST implementation.
+```
