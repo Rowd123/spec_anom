@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from spectral_anomaly import detect_energy_anomalies, plot_suspicious_windows
+from spectral_anomaly import detect_energy_anomalies, plot_window
 
 
 def make_example_data(seed: int = 7) -> pd.DataFrame:
@@ -95,6 +96,7 @@ def main(output: Path, show: bool = False) -> None:
     # One subplot is produced for every suspicious window. Use max_windows=N
     # here if a long recording creates too many subplots.
     fig, _ = plot_suspicious_windows(result, windows)
+    fig, _ = plot_window(first_anomaly_id, result, windows)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150, bbox_inches="tight")
     print(f"Plot written to {output}")
@@ -110,6 +112,8 @@ if __name__ == "__main__":
         type=Path,
         default=Path("energy_anomaly_windows.png"),
         help="path of the figure containing all suspicious windows",
+        default=Path("energy_anomaly_example.png"),
+        help="path of the generated plot",
     )
     parser.add_argument("--show", action="store_true", help="also open the Matplotlib window")
     args = parser.parse_args()
