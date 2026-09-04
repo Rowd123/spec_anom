@@ -294,3 +294,93 @@ def plot_window(
     ax.legend()
     fig.autofmt_xdate()
     return fig, ax
+
+
+def plot_suspicious_windows(
+    result: pd.DataFrame,
+    windows: Mapping[int, WindowData],
+    *,
+    show_centered: bool = True,
+    max_windows: int | None = None,
+):
+    """Plot every suspicious window in a single figure.
+
+    Parameters
+    ----------
+    result, windows:
+        Objects returned by :func:`detect_energy_anomalies`.
+    show_centered:
+        Also draw each locally centred signal.
+    max_windows:
+        Optionally limit the plot to the first N suspicious windows. This is
+        useful when a long recording contains many detections.
+
+    Returns
+    -------
+    tuple
+        The Matplotlib figure and a one-dimensional array of axes.
+
+    Raises
+    ------
+    ValueError
+        If there are no suspicious windows or ``max_windows`` is invalid.
+    """
+    import matplotlib.pyplot as plt
+
+    required_columns = {"suspicious", "score"}
+    missing_columns = required_columns.difference(result.columns)
+    if missing_columns:
+        raise ValueError(f"result is missing columns: {sorted(missing_columns)}")
+    if max_windows is not None and max_windows < 1:
+        raise ValueError("max_windows must be positive or None")
+
+    suspicious_ids = list(result.index[result["suspicious"].fillna(False).astype(bool)])
+    if max_windows is not None:
+        suspicious_ids = suspicious_ids[:max_windows]
+    if not suspicious_ids:
+        raise ValueError("no suspicious window to plot")
+
+    absent = [window_id for window_id in suspicious_ids if window_id not in windows]
+    if absent:
+        raise ValueError(f"missing WindowData for suspicious windows: {absent}")
+
+    fig, axes_grid = plt.subplots(
+        len(suspicious_ids),
+        1,
+        figsize=(12, max(3.0, 2.8 * len(suspicious_ids))),
+        squeeze=False,
+        sharex=False,
+    )
+    axes = axes_grid[:, 0]
+    for ax, window_id in zip(axes, suspicious_ids):
+        item = windows[window_id]
+        ax.plot(item.time, item.signal, color="0.65", label="regularized signal")
+        ax.scatter(
+            item.time[item.observed_mask],
+            item.signal[item.observed_mask],
+            s=14,
+            color="C0",
+            label="observed",
+            zorder=3,
+        )
+        ax.scatter(
+            item.time[item.interpolated_mask],
+            item.signal[item.interpolated_mask],
+            s=26,
+            marker="x",
+            color="C3",
+            label="interpolated",
+            zorder=4,
+        )
+        if show_centered:
+            ax.plot(item.time, item.centered, color="C2", alpha=0.8, label="centered")
+        score = result.loc[window_id, "score"]
+        ax.set_title(f"Suspicious window {window_id} — score={score:.3g}")
+        ax.set_xlabel("time")
+        ax.set_ylabel("signal")
+        ax.legend(loc="best")
+
+    fig.suptitle(f"Energy anomalies ({len(suspicious_ids)} windows)")
+    fig.tight_layout()
+    fig.autofmt_xdate()
+    return fig, axes

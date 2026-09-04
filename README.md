@@ -29,6 +29,11 @@ does **not** implement MSST or clustering.
    a different energy gets a finite, possibly very large score.
 
 ```python
+from spectral_anomaly import (
+    detect_energy_anomalies,
+    plot_suspicious_windows,
+    plot_window,
+)
 from spectral_anomaly import detect_energy_anomalies, plot_window
 
 result, windows = detect_energy_anomalies(
@@ -38,6 +43,12 @@ result, windows = detect_energy_anomalies(
 )
 anomalies = result[result["suspicious"]]
 if not anomalies.empty:
+    # Plot one selected anomaly.
+    plot_window(anomalies.index[0], result, windows)
+
+    # Or plot all anomaly windows in a single figure.
+    figure, axes = plot_suspicious_windows(result, windows)
+    figure.savefig("all_anomaly_windows.png", dpi=150, bbox_inches="tight")
     plot_window(anomalies.index[0], result, windows)
 ```
 
@@ -52,6 +63,10 @@ python examples/basic_usage.py
 
 The example creates a reproducible signal with a slowly drifting mean, missing
 timestamps, NaNs, an invalid quality flag, a duplicate timestamp, and one
+artificial energy anomaly. It prints the window metadata and writes all suspicious
+windows as separate subplots in `energy_anomaly_windows.png`. Use `--show` to
+display the figure interactively or `--output path/to/figure.png` to select another
+output.
 artificial energy anomaly. It prints the window metadata and writes the first
 suspicious window to `energy_anomaly_example.png`. Use `--show` to display the
 figure interactively or `--output path/to/figure.png` to select another output.

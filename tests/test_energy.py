@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from spectral_anomaly import detect_energy_anomalies, plot_suspicious_windows
 from spectral_anomaly import detect_energy_anomalies
 
 
@@ -135,3 +136,23 @@ def test_off_grid_timestamp_is_not_silently_snapped():
     idx = pd.to_datetime(["2025-01-01 00:00:00", "2025-01-01 00:00:01.1"])
     with pytest.raises(ValueError, match="not exactly aligned"):
         detect(frame([1.0, 2.0], index=idx), sampling_period="1s")
+
+
+def test_plot_suspicious_windows_plots_every_anomaly():
+    normal = np.array([-1.0, 1.0] * 4)
+    values = np.concatenate([normal, normal, normal, 8 * normal, normal, 7 * normal])
+    result, windows = detect(frame(values), k=3)
+
+    fig, axes = plot_suspicious_windows(result, windows, show_centered=False)
+
+    assert len(axes) == int(result["suspicious"].sum())
+    assert all("Suspicious window" in axis.get_title() for axis in axes)
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_plot_suspicious_windows_rejects_empty_selection():
+    result, windows = detect(frame(np.tile([-1.0, 1.0], 12)), k=100)
+    with pytest.raises(ValueError, match="no suspicious window"):
+        plot_suspicious_windows(result, windows)
