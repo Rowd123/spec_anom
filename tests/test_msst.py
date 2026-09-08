@@ -91,9 +91,10 @@ def test_analysis_centers_period_and_forwards_msst_options(monkeypatch):
     assert calls[0][1:] == (2.0, 4, {"hop_length": 2})
     assert np.array_equal(analyses[0].spectral_time, [0.0, 1.0, 2.0, 3.0])
 
-    figure, axes = plot_msst_periods(analyses)
-    assert axes.shape == (1, 3)
-    assert axes[0, 1].get_title() == "Period 0 — STFT"
-    import matplotlib.pyplot as plt
-
-    plt.close(figure)
+    figure = plot_msst_periods(analyses)
+    assert len(figure.data) == 4
+    assert [item.text for item in figure.layout.annotations] == [
+        "Period 0 — signal",
+        "Period 0 — STFT",
+        "Period 0 — MSST",
+    ]

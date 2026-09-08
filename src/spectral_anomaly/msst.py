@@ -320,11 +320,13 @@ def analyze_msst_periods(
     return analyses
 
 
+
 def plot_msst_periods(
     analyses: Mapping[int, MSSTResult], *, max_periods: int | None = None
 ):
-    """Plot the signal, STFT, and MSST for each studied period."""
-    import matplotlib.pyplot as plt
+    """Return an interactive Plotly view of signal, STFT, and MSST periods."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
 
     if max_periods is not None and max_periods < 1:
         raise ValueError("max_periods must be positive or None")
@@ -334,33 +336,53 @@ def plot_msst_periods(
     if not selected:
         raise ValueError("no MSST analysis to plot")
 
-    fig, axes = plt.subplots(
-        len(selected), 3, figsize=(16, max(3.5, 3.5 * len(selected))), squeeze=False
-    )
-    for row, (period_id, analysis) in enumerate(selected):
-        signal_axis, stft_axis, msst_axis = axes[row]
-        signal_axis.plot(analysis.period.time, analysis.processed_signal, color="C0")
-        anomaly = analysis.period.anomaly_mask
-        signal_axis.scatter(
-            analysis.period.time[anomaly], analysis.processed_signal[anomaly],
-            s=8, color="C3", label="anomaly extent", zorder=3,
+    titles = [
+        title
+        for period_id, _ in selected
+        for title in (
+            f"Period {period_id} — signal",
+            f"Period {period_id} — STFT",
+            f"Period {period_id} — MSST",
         )
-        signal_axis.set(title=f"Period {period_id} — signal", ylabel="amplitude")
-        signal_axis.legend(loc="best")
+    ]
+    figure = make_subplots(
+        rows=len(selected), cols=3, subplot_titles=titles,
+        horizontal_spacing=0.06, vertical_spacing=min(0.1, 0.3 / len(selected)),
+    )
+    for row, (period_id, analysis) in enumerate(selected, start=1):
+        figure.add_trace(go.Scatter(
+            x=analysis.period.time, y=analysis.processed_signal,
+            mode="lines", name="processed signal", line={"color": "#2563eb"},
+            legendgroup="signal", showlegend=row == 1,
+        ), row=row, col=1)
+        anomaly = analysis.period.anomaly_mask
+        figure.add_trace(go.Scatter(
+            x=analysis.period.time[anomaly], y=analysis.processed_signal[anomaly],
+            mode="markers", name="anomaly extent",
+            marker={"size": 5, "color": "#dc2626"},
+            legendgroup="anomaly", showlegend=row == 1,
+        ), row=row, col=1)
+        figure.add_trace(go.Heatmap(
+            x=analysis.spectral_time, y=analysis.frequencies,
+            z=np.abs(analysis.stft), colorscale="Viridis",
+            colorbar={"title": "|STFT|", "x": 0.62},
+            showscale=row == 1, hovertemplate="t=%{x:.4g}s<br>f=%{y:.4g}Hz<br>|S|=%{z:.4g}<extra></extra>",
+        ), row=row, col=2)
+        figure.add_trace(go.Heatmap(
+            x=analysis.spectral_time, y=analysis.frequencies,
+            z=np.abs(analysis.msst), colorscale="Turbo",
+            colorbar={"title": "|MSST|", "x": 1.02},
+            showscale=row == 1, hovertemplate="t=%{x:.4g}s<br>f=%{y:.4g}Hz<br>|T|=%{z:.4g}<extra></extra>",
+        ), row=row, col=3)
+        figure.update_xaxes(title_text="time", row=row, col=1)
+        figure.update_yaxes(title_text="signal", row=row, col=1)
+        for column in (2, 3):
+            figure.update_xaxes(title_text="time (s)", row=row, col=column)
+            figure.update_yaxes(title_text="frequency (Hz)", row=row, col=column)
 
-        for axis, coefficients, title in (
-            (stft_axis, analysis.stft, "STFT"),
-            (msst_axis, analysis.msst, "MSST"),
-        ):
-            mesh = axis.pcolormesh(
-                analysis.spectral_time,
-                analysis.frequencies,
-                np.abs(coefficients),
-                shading="auto",
-                cmap="magma",
-            )
-            axis.set(title=f"Period {period_id} — {title}", xlabel="seconds", ylabel="Hz")
-            fig.colorbar(mesh, ax=axis, label="magnitude")
-    fig.tight_layout()
-    fig.autofmt_xdate()
-    return fig, axes
+    figure.update_layout(
+        title=f"Fixed-period spectral analysis ({len(selected)} periods)",
+        height=max(520, 420 * len(selected)), template="plotly_white",
+        hovermode="closest",
+    )
+    return figure

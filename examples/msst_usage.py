@@ -5,8 +5,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-
 from spectral_anomaly import (
     analyze_msst_periods,
     detect_energy_anomalies,
@@ -59,13 +57,12 @@ def main(output: Path, show: bool = False) -> None:
         window_length=128,
         hop_length=4,
     )
-    figure, _ = plot_msst_periods(analyses)
+    figure = plot_msst_periods(analyses)
     output.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output, dpi=150, bbox_inches="tight")
+    figure.write_html(output, include_plotlyjs=True, full_html=True)
     print(f"STFT/MSST figure written to {output}")
     if show:
-        plt.show()
-    plt.close(figure)
+        figure.show()
 
 
 if __name__ == "__main__":
@@ -73,7 +70,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("msst_analysis_periods.png"),
+        default=Path("msst_analysis_periods.html"),
         help="path of the figure containing all analysed periods",
     )
     parser.add_argument("--show", action="store_true", help="also display the figure")

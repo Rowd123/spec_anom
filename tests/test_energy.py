@@ -3,7 +3,6 @@ import pandas as pd
 import pytest
 
 from spectral_anomaly import detect_energy_anomalies, plot_suspicious_windows
-from spectral_anomaly import detect_energy_anomalies
 
 
 def frame(values, *, index=None, quality=None):
@@ -143,13 +142,10 @@ def test_plot_suspicious_windows_plots_every_anomaly():
     values = np.concatenate([normal, normal, normal, 8 * normal, normal, 7 * normal])
     result, windows = detect(frame(values), k=3)
 
-    fig, axes = plot_suspicious_windows(result, windows, show_centered=False)
+    figure = plot_suspicious_windows(result, windows, show_centered=False)
 
-    assert len(axes) == int(result["suspicious"].sum())
-    assert all("Suspicious window" in axis.get_title() for axis in axes)
-    import matplotlib.pyplot as plt
-
-    plt.close(fig)
+    assert len(figure.layout.annotations) == int(result["suspicious"].sum())
+    assert all("Suspicious window" in item.text for item in figure.layout.annotations)
 
 
 def test_plot_suspicious_windows_rejects_empty_selection():

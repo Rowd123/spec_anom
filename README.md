@@ -34,7 +34,6 @@ from spectral_anomaly import (
     plot_suspicious_windows,
     plot_window,
 )
-from spectral_anomaly import detect_energy_anomalies, plot_window
 
 result, windows = detect_energy_anomalies(
     frame, value_col="value", quality_col="quality",
@@ -44,12 +43,12 @@ result, windows = detect_energy_anomalies(
 anomalies = result[result["suspicious"]]
 if not anomalies.empty:
     # Plot one selected anomaly.
-    plot_window(anomalies.index[0], result, windows)
+    one_figure = plot_window(anomalies.index[0], result, windows)
+    one_figure.show()
 
-    # Or plot all anomaly windows in a single figure.
-    figure, axes = plot_suspicious_windows(result, windows)
-    figure.savefig("all_anomaly_windows.png", dpi=150, bbox_inches="tight")
-    plot_window(anomalies.index[0], result, windows)
+    # Or plot all anomaly windows in a single interactive figure.
+    figure = plot_suspicious_windows(result, windows)
+    figure.write_html("all_anomaly_windows.html")
 ```
 
 ## Complete runnable example
@@ -64,9 +63,9 @@ python examples/basic_usage.py
 The example creates a reproducible signal with a slowly drifting mean, missing
 timestamps, NaNs, an invalid quality flag, a duplicate timestamp, and one
 artificial energy anomaly. It prints the window metadata and writes all suspicious
-windows as separate subplots in `energy_anomaly_windows.png`. Use `--show` to
-display the figure interactively or `--output path/to/figure.png` to select another
-output.
+windows as separate interactive subplots in `energy_anomaly_windows.html`. Use
+`--show` to display the figure interactively or
+`--output path/to/figure.html` to select another output.
 
 The complete source is available in [`examples/basic_usage.py`](examples/basic_usage.py).
 
@@ -100,12 +99,14 @@ analyses = analyze_msst_periods(
     hop_length=4,
 )
 if analyses:
-    figure, axes = plot_msst_periods(analyses)
-    figure.savefig("msst_analysis_periods.png", dpi=150, bbox_inches="tight")
+    figure = plot_msst_periods(analyses)
+    figure.write_html("msst_analysis_periods.html")
 ```
 
-The figure has one row per studied period: the fixed-length time signal, its STFT,
-and its iterative multisynchrosqueezed representation. The red signal points show
+The interactive Plotly figure has one row per studied period: the fixed-length
+time signal, its STFT, and its iterative multisynchrosqueezed representation.
+Hovering reveals exact time, frequency, and magnitude values. Zooming and panning
+remain linked to each individual subplot. The red signal points show
 the extent covered by the original consecutive anomalous windows. This stage only
 computes and plots representations; it does not yet confirm anomalies or extract
 clustering features.
@@ -115,12 +116,6 @@ Run the complete example with:
 ```bash
 python examples/msst_usage.py
 ```
-
-artificial energy anomaly. It prints the window metadata and writes the first
-suspicious window to `energy_anomaly_example.png`. Use `--show` to display the
-figure interactively or `--output path/to/figure.png` to select another output.
-
-The complete source is available in [`examples/basic_usage.py`](examples/basic_usage.py).
 
 ### Using suspicious windows in the next pipeline stage
 

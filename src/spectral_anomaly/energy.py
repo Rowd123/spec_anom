@@ -266,6 +266,7 @@ def detect_energy_anomalies(
     return result, windows
 
 
+
 def plot_window(
     window_id: int,
     result: pd.DataFrame,
@@ -273,27 +274,40 @@ def plot_window(
     *,
     show_centered: bool = True,
 ):
-    """Plot observed/interpolated points for one accepted window."""
-    import matplotlib.pyplot as plt
+    """Return an interactive Plotly figure for one accepted window."""
+    import plotly.graph_objects as go
 
     if window_id not in result.index:
         raise KeyError(f"unknown window_id: {window_id}")
     if window_id not in windows:
         raise ValueError("window was rejected and has no complete signal to plot")
     item = windows[window_id]
-    fig, ax = plt.subplots()
-    ax.plot(item.time, item.signal, color="0.65", label="regularized signal")
-    ax.scatter(item.time[item.observed_mask], item.signal[item.observed_mask], s=18,
-               color="C0", label="observed", zorder=3)
-    ax.scatter(item.time[item.interpolated_mask], item.signal[item.interpolated_mask], s=28,
-               marker="x", color="C3", label="interpolated", zorder=4)
+    figure = go.Figure()
+    figure.add_trace(go.Scatter(
+        x=item.time, y=item.signal, mode="lines", name="regularized signal",
+        line={"color": "#9ca3af"},
+    ))
+    figure.add_trace(go.Scatter(
+        x=item.time[item.observed_mask], y=item.signal[item.observed_mask],
+        mode="markers", name="observed", marker={"size": 6, "color": "#2563eb"},
+    ))
+    figure.add_trace(go.Scatter(
+        x=item.time[item.interpolated_mask], y=item.signal[item.interpolated_mask],
+        mode="markers", name="interpolated",
+        marker={"size": 9, "symbol": "x", "color": "#dc2626"},
+    ))
     if show_centered:
-        ax.plot(item.time, item.centered, color="C2", alpha=0.8, label="centered")
+        figure.add_trace(go.Scatter(
+            x=item.time, y=item.centered, mode="lines", name="centered",
+            line={"color": "#16a34a"}, opacity=0.8,
+        ))
     state = "suspicious" if bool(result.loc[window_id, "suspicious"]) else "normal"
-    ax.set(title=f"Window {window_id} ({state})", xlabel="time", ylabel="signal")
-    ax.legend()
-    fig.autofmt_xdate()
-    return fig, ax
+    figure.update_layout(
+        title=f"Window {window_id} ({state})",
+        xaxis_title="time", yaxis_title="signal", template="plotly_white",
+        hovermode="x unified",
+    )
+    return figure
 
 
 def plot_suspicious_windows(
@@ -303,29 +317,9 @@ def plot_suspicious_windows(
     show_centered: bool = True,
     max_windows: int | None = None,
 ):
-    """Plot every suspicious window in a single figure.
-
-    Parameters
-    ----------
-    result, windows:
-        Objects returned by :func:`detect_energy_anomalies`.
-    show_centered:
-        Also draw each locally centred signal.
-    max_windows:
-        Optionally limit the plot to the first N suspicious windows. This is
-        useful when a long recording contains many detections.
-
-    Returns
-    -------
-    tuple
-        The Matplotlib figure and a one-dimensional array of axes.
-
-    Raises
-    ------
-    ValueError
-        If there are no suspicious windows or ``max_windows`` is invalid.
-    """
-    import matplotlib.pyplot as plt
+    """Return an interactive figure containing every suspicious window."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
 
     required_columns = {"suspicious", "score"}
     missing_columns = required_columns.difference(result.columns)
@@ -339,48 +333,54 @@ def plot_suspicious_windows(
         suspicious_ids = suspicious_ids[:max_windows]
     if not suspicious_ids:
         raise ValueError("no suspicious window to plot")
-
     absent = [window_id for window_id in suspicious_ids if window_id not in windows]
     if absent:
         raise ValueError(f"missing WindowData for suspicious windows: {absent}")
 
-    fig, axes_grid = plt.subplots(
-        len(suspicious_ids),
-        1,
-        figsize=(12, max(3.0, 2.8 * len(suspicious_ids))),
-        squeeze=False,
-        sharex=False,
+    titles = [
+        f"Suspicious window {window_id} — score={result.loc[window_id, 'score']:.3g}"
+        for window_id in suspicious_ids
+    ]
+    figure = make_subplots(
+        rows=len(suspicious_ids), cols=1, shared_xaxes=False,
+        vertical_spacing=min(0.08, 0.3 / len(suspicious_ids)), subplot_titles=titles,
     )
-    axes = axes_grid[:, 0]
-    for ax, window_id in zip(axes, suspicious_ids):
+    for row, window_id in enumerate(suspicious_ids, start=1):
         item = windows[window_id]
-        ax.plot(item.time, item.signal, color="0.65", label="regularized signal")
-        ax.scatter(
-            item.time[item.observed_mask],
-            item.signal[item.observed_mask],
-            s=14,
-            color="C0",
-            label="observed",
-            zorder=3,
-        )
-        ax.scatter(
-            item.time[item.interpolated_mask],
-            item.signal[item.interpolated_mask],
-            s=26,
-            marker="x",
-            color="C3",
-            label="interpolated",
-            zorder=4,
-        )
+        show_legend = row == 1
+        traces = [
+            go.Scatter(
+                x=item.time, y=item.signal, mode="lines", name="regularized signal",
+                line={"color": "#9ca3af"}, legendgroup="regularized",
+                showlegend=show_legend,
+            ),
+            go.Scatter(
+                x=item.time[item.observed_mask], y=item.signal[item.observed_mask],
+                mode="markers", name="observed",
+                marker={"size": 5, "color": "#2563eb"},
+                legendgroup="observed", showlegend=show_legend,
+            ),
+            go.Scatter(
+                x=item.time[item.interpolated_mask], y=item.signal[item.interpolated_mask],
+                mode="markers", name="interpolated",
+                marker={"size": 8, "symbol": "x", "color": "#dc2626"},
+                legendgroup="interpolated", showlegend=show_legend,
+            ),
+        ]
         if show_centered:
-            ax.plot(item.time, item.centered, color="C2", alpha=0.8, label="centered")
-        score = result.loc[window_id, "score"]
-        ax.set_title(f"Suspicious window {window_id} — score={score:.3g}")
-        ax.set_xlabel("time")
-        ax.set_ylabel("signal")
-        ax.legend(loc="best")
+            traces.append(go.Scatter(
+                x=item.time, y=item.centered, mode="lines", name="centered",
+                line={"color": "#16a34a"}, opacity=0.8,
+                legendgroup="centered", showlegend=show_legend,
+            ))
+        for trace in traces:
+            figure.add_trace(trace, row=row, col=1)
+        figure.update_xaxes(title_text="time", row=row, col=1)
+        figure.update_yaxes(title_text="signal", row=row, col=1)
 
-    fig.suptitle(f"Energy anomalies ({len(suspicious_ids)} windows)")
-    fig.tight_layout()
-    fig.autofmt_xdate()
-    return fig, axes
+    figure.update_layout(
+        title=f"Energy anomalies ({len(suspicious_ids)} windows)",
+        height=max(420, 320 * len(suspicious_ids)), template="plotly_white",
+        hovermode="x unified",
+    )
+    return figure
