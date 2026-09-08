@@ -17,15 +17,18 @@ does **not** implement MSST or clustering.
    linearly interpolated. A long run is never partially filled, so windows at its
    edges are rejected as well. Interpolation is convenient but changes spectral
    content (typically attenuating high frequencies); keep this limit conservative.
-5. Each accepted window is locally mean-centred and tapered. Its energy is
+5. The original signal values are not centred or otherwise changed for the energy
+   calculation: they are only multiplied by the selected Fourier taper. Energy is
    computed from the one-sided real FFT with Parseval weights and normalised by
-   the taper energy. By default, Fourier bin 0 is subtracted before comparison
-   with history (`exclude_dc_bin=True`). The result also exposes
+   the taper energy. By default, the complete contribution assigned to Fourier
+   bin 0 is subtracted before comparison with history (`exclude_dc_bin=True`). A
+   centred copy is still returned for optional plotting, but is not used by the
+   FFT or the anomaly score. The result also exposes
    `energy_including_dc` and `dc_bin_energy` for auditing. Excluding bin 0 removes
-   only exact DC—not a configurable low-frequency band. Set
-   `exclude_dc_bin=False` to reproduce the former full-band energy. This remains
-   comparable between tapers for white noise, but the taper should stay fixed for
-   coloured or nonstationary signals.
+   exactly that discrete bin—not a configurable set of low-frequency bins. Set
+   `exclude_dc_bin=False` to include it. Because tapering spreads a constant or
+   slow trend beyond bin 0, this is deliberately not equivalent to detrending;
+   keep the taper fixed when comparing windows.
 6. A causal median/MAD baseline uses only earlier accepted windows. The default
    excludes detected anomalies from history to limit contamination. During warmup
    (`min_history` points), scores remain unavailable. A relative machine-epsilon

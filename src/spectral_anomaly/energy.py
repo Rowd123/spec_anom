@@ -167,14 +167,15 @@ def _compute_window_energy(
     *,
     exclude_dc_bin: bool,
 ) -> tuple[float, float, float, np.ndarray, np.ndarray]:
-    """Compute taper-normalised energy, optionally excluding Fourier bin zero.
+    """Compute taper-normalised energy from the unchanged signal.
 
     The one-sided real FFT is weighted according to Parseval's identity. Thus,
-    ``energy_including_dc`` is equivalent to the former time-domain energy, while
-    ``dc_bin_energy`` isolates exactly the zero-frequency contribution.
+    ``energy_including_dc`` is equivalent to the tapered time-domain energy, while
+    ``dc_bin_energy`` isolates exactly the first frequency-bin contribution. The
+    centered array is retained for inspection only; it is not used by the FFT.
     """
     centered = signal - np.mean(signal)
-    windowed = centered * taper
+    windowed = signal * taper
     spectrum_power = np.abs(np.fft.rfft(windowed)) ** 2
     weights = np.full(len(spectrum_power), 2.0)
     weights[0] = 1.0

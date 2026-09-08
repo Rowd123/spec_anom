@@ -72,13 +72,15 @@ def test_small_gap_is_filled_but_large_gap_is_rejected_with_reasons():
     assert "unfilled_missing_values" in result.loc[1, "rejection_reason"]
 
 
-def test_local_centering_removes_slow_mean_drift():
-    t = np.arange(64)
-    values = np.tile(np.array([-1.0, 1.0]), 32) + 0.1 * t
-    result, _ = detect(frame(values), history_size=6, min_history=3, k=20)
-    assert result["accepted"].all()
-    assert np.ptp(result["energy"]) < 1e-12
-    assert not result["suspicious"].any()
+def test_energy_fft_uses_original_signal_without_centering():
+    values = np.array([10.0, 14.0, 9.0, 12.0, 7.0, 11.0, 10.5, 8.0])
+    result, windows = detect(frame(values), min_valid_ratio=1)
+    window = windows[0]
+
+    assert np.array_equal(window.signal, values)
+    assert np.allclose(window.windowed, values * np.hanning(8))
+    assert np.mean(window.centered) == pytest.approx(0)
+    assert result.loc[0, "dc_bin_energy"] > 0
 
 
 def test_dc_bin_is_removed_from_energy_by_default():
@@ -100,7 +102,7 @@ def test_dc_exclusion_uses_parseval_equivalent_full_energy():
     result, windows = detect(frame(values), min_valid_ratio=1, exclude_dc_bin=False)
     window = windows[0]
     taper_energy = np.sum(np.hanning(8) ** 2)
-    expected = np.sum(window.windowed ** 2) / taper_energy
+    expected = np.sum((values * np.hanning(8)) ** 2) / taper_energy
 
     assert result.loc[0, "energy"] == pytest.approx(expected)
 
