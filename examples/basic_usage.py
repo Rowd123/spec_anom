@@ -63,6 +63,7 @@ def main(output: Path, show: bool = False) -> None:
         history_size=12,
         min_history=6,
         k=5.0,
+        exclude_dc_bin=True,
         history_policy="exclude_suspicious",
     )
 

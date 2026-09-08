@@ -81,6 +81,30 @@ def test_local_centering_removes_slow_mean_drift():
     assert not result["suspicious"].any()
 
 
+def test_dc_bin_is_removed_from_energy_by_default():
+    values = np.array([0.0, 4.0, -1.0, 2.0, -3.0, 1.0, 0.5, -2.0])
+    data = frame(values)
+    without_dc, _ = detect(data, min_valid_ratio=1)
+    with_dc, _ = detect(data, min_valid_ratio=1, exclude_dc_bin=False)
+
+    row = without_dc.loc[0]
+    assert row["dc_bin_energy"] > 0
+    assert row["energy"] + row["dc_bin_energy"] == pytest.approx(
+        row["energy_including_dc"]
+    )
+    assert with_dc.loc[0, "energy"] == pytest.approx(row["energy_including_dc"])
+
+
+def test_dc_exclusion_uses_parseval_equivalent_full_energy():
+    values = np.array([0.0, 4.0, -1.0, 2.0, -3.0, 1.0, 0.5, -2.0])
+    result, windows = detect(frame(values), min_valid_ratio=1, exclude_dc_bin=False)
+    window = windows[0]
+    taper_energy = np.sum(np.hanning(8) ** 2)
+    expected = np.sum(window.windowed ** 2) / taper_energy
+
+    assert result.loc[0, "energy"] == pytest.approx(expected)
+
+
 def test_slow_energy_drift_uses_a_local_not_global_baseline():
     blocks = []
     pattern = np.array([-1.0, 1.0] * 4)

@@ -17,11 +17,15 @@ does **not** implement MSST or clustering.
    linearly interpolated. A long run is never partially filled, so windows at its
    edges are rejected as well. Interpolation is convenient but changes spectral
    content (typically attenuating high frequencies); keep this limit conservative.
-5. Each accepted window is locally mean-centred. Its energy is
-   `sum((centered * taper)**2) / sum(taper**2)`. This is a window-energy-normalised
-   local variance estimate: it removes slow level drift and makes white-noise
-   energy comparable between tapers. It is not an unbiased estimate for every
-   coloured/nonstationary signal, so the taper should remain fixed in production.
+5. Each accepted window is locally mean-centred and tapered. Its energy is
+   computed from the one-sided real FFT with Parseval weights and normalised by
+   the taper energy. By default, Fourier bin 0 is subtracted before comparison
+   with history (`exclude_dc_bin=True`). The result also exposes
+   `energy_including_dc` and `dc_bin_energy` for auditing. Excluding bin 0 removes
+   only exact DC—not a configurable low-frequency band. Set
+   `exclude_dc_bin=False` to reproduce the former full-band energy. This remains
+   comparable between tapers for white noise, but the taper should stay fixed for
+   coloured or nonstationary signals.
 6. A causal median/MAD baseline uses only earlier accepted windows. The default
    excludes detected anomalies from history to limit contamination. During warmup
    (`min_history` points), scores remain unavailable. A relative machine-epsilon
@@ -38,7 +42,7 @@ from spectral_anomaly import (
 result, windows = detect_energy_anomalies(
     frame, value_col="value", quality_col="quality",
     valid_quality_flags={"good"}, sampling_period="1s",
-    window_size=256, overlap=128,
+    window_size=256, overlap=128, exclude_dc_bin=True,
 )
 anomalies = result[result["suspicious"]]
 if not anomalies.empty:

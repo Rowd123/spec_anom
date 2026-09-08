@@ -161,10 +161,30 @@ def _longest_missing_run(observed: np.ndarray) -> int:
     return max((stop - start for start, stop in runs), default=0)
 
 
-def _compute_window_energy(signal: np.ndarray, taper: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+def _compute_window_energy(
+    signal: np.ndarray,
+    taper: np.ndarray,
+    *,
+    exclude_dc_bin: bool,
+) -> tuple[float, float, float, np.ndarray, np.ndarray]:
+    """Compute taper-normalised energy, optionally excluding Fourier bin zero.
+
+    The one-sided real FFT is weighted according to Parseval's identity. Thus,
+    ``energy_including_dc`` is equivalent to the former time-domain energy, while
+    ``dc_bin_energy`` isolates exactly the zero-frequency contribution.
+    """
     centered = signal - np.mean(signal)
     windowed = centered * taper
-    return float(np.dot(windowed, windowed) / np.dot(taper, taper)), centered, windowed
+    spectrum_power = np.abs(np.fft.rfft(windowed)) ** 2
+    weights = np.full(len(spectrum_power), 2.0)
+    weights[0] = 1.0
+    if len(windowed) % 2 == 0:
+        weights[-1] = 1.0
+    normalizer = len(windowed) * np.dot(taper, taper)
+    energy_including_dc = float(np.dot(weights, spectrum_power) / normalizer)
+    dc_bin_energy = float(spectrum_power[0] / normalizer)
+    energy = max(0.0, energy_including_dc - dc_bin_energy) if exclude_dc_bin else energy_including_dc
+    return energy, energy_including_dc, dc_bin_energy, centered, windowed
 
 
 def _compute_robust_score(energy: float, history: list[float]) -> tuple[float, float, float, float]:
@@ -193,6 +213,7 @@ def detect_energy_anomalies(
     history_size: int = 20,
     min_history: int = 5,
     k: float = 4.0,
+    exclude_dc_bin: bool = True,
     history_policy: Literal["exclude_suspicious", "all"] = "exclude_suspicious",
 ) -> tuple[pd.DataFrame, dict[int, WindowData]]:
     """Detect unusual local energy on an exact, regular time grid.
@@ -206,6 +227,8 @@ def detect_energy_anomalies(
                          max_interpolation_gap, history_size, min_history, k)
     if history_policy not in {"exclude_suspicious", "all"}:
         raise ValueError("history_policy must be 'exclude_suspicious' or 'all'")
+    if not isinstance(exclude_dc_bin, bool):
+        raise TypeError("exclude_dc_bin must be a bool")
     prepared = _prepare_dataframe(data, value_col, quality_col, valid_quality_flags)
     regular, _ = _regularize_signal(prepared, sampling_period)
     raw = regular["__signal"].to_numpy(dtype=float)
@@ -238,10 +261,17 @@ def detect_energy_anomalies(
         if np.isnan(signal).any():
             reasons.append("unfilled_missing_values")
         accepted = not reasons
-        energy = baseline = mad = scale = score = np.nan
+        energy = energy_including_dc = dc_bin_energy = np.nan
+        baseline = mad = scale = score = np.nan
         suspicious = False
         if accepted:
-            energy, centered, windowed = _compute_window_energy(signal, taper)
+            energy, energy_including_dc, dc_bin_energy, centered, windowed = (
+                _compute_window_energy(
+                    signal,
+                    taper,
+                    exclude_dc_bin=exclude_dc_bin,
+                )
+            )
             if len(history) >= min_history:
                 baseline, mad, scale, score = _compute_robust_score(energy, history[-history_size:])
                 suspicious = bool(abs(score) > k)
@@ -257,14 +287,15 @@ def detect_energy_anomalies(
             "grid_start": start, "grid_stop": stop, "expected_samples": window_size,
             "observed_samples": valid_count, "interpolated_samples": int(interp.sum()),
             "valid_ratio": ratio, "longest_missing_run": longest, "accepted": accepted,
-            "rejection_reason": ";".join(reasons) if reasons else None, "energy": energy,
+            "rejection_reason": ";".join(reasons) if reasons else None,
+            "energy": energy, "energy_including_dc": energy_including_dc,
+            "dc_bin_energy": dc_bin_energy,
             "baseline": baseline, "mad": mad, "robust_scale": scale, "score": score,
             "suspicious": suspicious,
         })
     result = pd.DataFrame(rows)
     result.index = pd.RangeIndex(len(result), name="window_id")
     return result, windows
-
 
 
 def plot_window(
