@@ -67,6 +67,55 @@ artificial energy anomaly. It prints the window metadata and writes all suspicio
 windows as separate subplots in `energy_anomaly_windows.png`. Use `--show` to
 display the figure interactively or `--output path/to/figure.png` to select another
 output.
+
+The complete source is available in [`examples/basic_usage.py`](examples/basic_usage.py).
+
+## Fixed-period SSQ-STFT/MSST analysis
+
+The second stage groups anomalous windows whose grid intervals overlap or touch.
+Starting at the first anomalous sample, each group is extended **forward** with
+samples from subsequent accepted windows until `period_size` is reached. A group
+is excluded, with an explicit reason in `period_metadata`, when it is already
+longer than `period_size` or when there is not enough complete data after it.
+
+```python
+from spectral_anomaly import (
+    analyze_msst_periods,
+    plot_msst_periods,
+    prepare_analysis_periods,
+)
+
+period_metadata, periods = prepare_analysis_periods(
+    result,
+    windows,
+    period_size=1024,
+)
+analyses = analyze_msst_periods(
+    periods,
+    sampling_frequency=1.0,  # Hz; reciprocal of the 1-second sampling period
+    iteration_count=3,
+    window="hann",
+    n_fft=256,
+    window_length=128,
+    hop_length=4,
+)
+if analyses:
+    figure, axes = plot_msst_periods(analyses)
+    figure.savefig("msst_analysis_periods.png", dpi=150, bbox_inches="tight")
+```
+
+The figure has one row per studied period: the fixed-length time signal, its STFT,
+and its iterative multisynchrosqueezed representation. The red signal points show
+the extent covered by the original consecutive anomalous windows. This stage only
+computes and plots representations; it does not yet confirm anomalies or extract
+clustering features.
+
+Run the complete example with:
+
+```bash
+python examples/msst_usage.py
+```
+
 artificial energy anomaly. It prints the window metadata and writes the first
 suspicious window to `energy_anomaly_example.png`. Use `--show` to display the
 figure interactively or `--output path/to/figure.png` to select another output.
