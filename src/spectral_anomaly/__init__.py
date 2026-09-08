@@ -27,3 +27,7 @@ __all__ = [
     "plot_msst_periods",
     "prepare_analysis_periods",
 ]
+]
+from .energy import WindowData, detect_energy_anomalies, plot_window
+
+__all__ = ["WindowData", "detect_energy_anomalies", "plot_window"]

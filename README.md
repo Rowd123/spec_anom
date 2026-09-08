@@ -34,6 +34,7 @@ from spectral_anomaly import (
     plot_suspicious_windows,
     plot_window,
 )
+from spectral_anomaly import detect_energy_anomalies, plot_window
 
 result, windows = detect_energy_anomalies(
     frame, value_col="value", quality_col="quality",
@@ -48,6 +49,7 @@ if not anomalies.empty:
     # Or plot all anomaly windows in a single figure.
     figure, axes = plot_suspicious_windows(result, windows)
     figure.savefig("all_anomaly_windows.png", dpi=150, bbox_inches="tight")
+    plot_window(anomalies.index[0], result, windows)
 ```
 
 ## Complete runnable example
@@ -113,6 +115,12 @@ Run the complete example with:
 ```bash
 python examples/msst_usage.py
 ```
+
+artificial energy anomaly. It prints the window metadata and writes the first
+suspicious window to `energy_anomaly_example.png`. Use `--show` to display the
+figure interactively or `--output path/to/figure.png` to select another output.
+
+The complete source is available in [`examples/basic_usage.py`](examples/basic_usage.py).
 
 ### Using suspicious windows in the next pipeline stage
 

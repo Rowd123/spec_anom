@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from spectral_anomaly import detect_energy_anomalies, plot_suspicious_windows
+from spectral_anomaly import detect_energy_anomalies
 
 
 def frame(values, *, index=None, quality=None):
