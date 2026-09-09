@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from spectral_anomaly import analyze_structural_components, plot_structural_window
+from spectral_anomaly import analyze_candidate_structures, plot_candidate_structures
 
 from basic_usage import make_example_data
 
@@ -13,7 +13,7 @@ from basic_usage import make_example_data
 def main(output: Path, window_id: int | None = None, show: bool = False) -> None:
     """Run the morphology prototype and plot one quality-valid window."""
     data = make_example_data()
-    metadata, analyses, components = analyze_structural_components(
+    metadata, results, components, candidates = analyze_candidate_structures(
         data,
         value_col="value",
         quality_col="quality",
@@ -40,18 +40,26 @@ def main(output: Path, window_id: int | None = None, show: bool = False) -> None
             "coherence_threshold": 0.5,
             "minimum_component_area": 4,
         },
+        association_options={
+            "max_fragment_time_gap_seconds": 8.0,
+            "max_fragment_frequency_gap_hz": 0.01,
+            "max_fragment_frequency_centroid_difference_hz": 0.02,
+            "max_fragment_orientation_difference_radians": 0.26,
+        },
     )
-    accepted_ids = list(analyses)
+    accepted_ids = list(results)
     if not accepted_ids:
         raise RuntimeError("no quality-valid window is available")
     selected_id = accepted_ids[0] if window_id is None else window_id
-    if selected_id not in analyses:
+    if selected_id not in results:
         raise ValueError(f"window {selected_id} is not quality-valid")
 
     print(metadata.loc[[selected_id], ["start_time", "end_time"]].to_string())
     print("\nExtracted component population:")
     print(components[components["window_id"] == selected_id].to_string(index=False))
-    figure = plot_structural_window(analyses[selected_id])
+    print("\nAssociated candidate structures:")
+    print(candidates[candidates["window_id"] == selected_id].to_string(index=False))
+    figure = plot_candidate_structures(results[selected_id])
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.write_html(output, include_plotlyjs=True, full_html=True)
     print(f"Six-panel diagnostic for window {selected_id} written to {output}")
@@ -65,7 +73,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("msst_structure_window.html"),
+        default=Path("stft_candidate_structures.html"),
         help="destination of the Plotly HTML diagnostic",
     )
     parser.add_argument("--show", action="store_true", help="also display the figure")

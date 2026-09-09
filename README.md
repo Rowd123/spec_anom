@@ -75,7 +75,8 @@ than background variation. Tensor smoothing must suppress pixel noise without
 merging nearby shapes. Thresholds should eventually be calibrated on background
 recordings rather than interpreted as a universal classifier.
 
-The normalization is a running 2-D median/MAD of `abs(MSST)` and therefore does
+The normalization is a running 2-D median/MAD of the selected spectral magnitude
+and therefore does
 not assume a single global noise level or white stationary noise. The structure
 tensor is evaluated in dimensionless local scale coordinates, making its
 coherence orientation-neutral. Connected components use 8-connectivity and do
@@ -83,6 +84,10 @@ not assume a single-valued ridge `f(t)`, so vertical and multi-frequency shapes
 remain representable. Skeleton, curvature, loops, branch counts, HDBSCAN, and a
 final decision rule are intentionally deferred until these maps and basic
 features have been validated visually.
+
+`minimum_component_area` defaults to 1: small components are retained as data,
+not silently declared to be noise. Raising it is an explicit exploratory
+segmentation choice whose effect should be reported.
 
 ### Structural prototype usage
 
@@ -170,6 +175,79 @@ missing frequency bands; fit scaling on training periods only; and quantify how
 often each learned family occurs per window. A future cluster label `-1` must
 mean only “not assigned to a dense learned family,” never automatic physical
 anomaly.
+
+### From connected fragments to candidate structures
+
+A connected component is a segmentation object, not necessarily one physical
+occurrence. `associate_component_fragments` builds an undirected graph whose
+nodes are the original components. An edge is added only when all four physical
+criteria pass: temporal gap, frequency-interval gap, frequency-centroid
+difference, and axial orientation difference. Connected graph groups become
+`CandidateStructure` objects; original component masks and IDs are never
+discarded.
+
+The four experimental controls are:
+
+* `max_fragment_time_gap_seconds`;
+* `max_fragment_frequency_gap_hz`;
+* `max_fragment_frequency_centroid_difference_hz`;
+* `max_fragment_orientation_difference_radians`.
+
+Their defaults are deliberately conservative: all distance tolerances are zero,
+apart from a 10-degree orientation tolerance. Useful values depend on STFT time/
+frequency resolution and on the physical process, so real-data examples pass
+explicit values. Association is transitive: if C1--C2 and C2--C3 pass, all three
+form one candidate even when C1--C3 does not. This repairs short interruptions
+but can also chain two distinct occurrences through intermediate fragments.
+False merges remain possible for two nearby parallel occurrences with overlapping
+frequency support, at crossings where local orientation is unstable, for broad
+bands whose centroids happen to agree, or through a long transitive chain of
+individually acceptable gaps. Conversely, frequency drift or a noisy PCA angle
+can prevent a legitimate merge. The association is intentionally confined to
+one window and does not join objects across window boundaries.
+
+Candidate features are recomputed from the union of the retained pixels, never
+by averaging component rows. Alongside component geometry/significance/
+coherence, candidates expose `fragment_count`, `time_span_seconds`,
+`active_duration_seconds`, `total_gap_duration_seconds`,
+`maximum_gap_duration_seconds`, and `gap_fraction`. Thus a continuous band and a
+fragmented band with the same outer span remain distinguishable.
+
+`support_bandwidth_hz` means occupied frequency-bin count times frequency
+resolution; it is therefore one `delta_f` for a one-bin object.
+`frequency_span_hz` means `frequency_max - frequency_min` and is zero for that
+same object. Legacy `bandwidth_hz` remains an alias of support bandwidth.
+Likewise, candidate `time_span_seconds` includes the full bin support between
+outer edges, whereas `active_duration_seconds` counts only time columns holding
+candidate pixels.
+
+```python
+from spectral_anomaly import analyze_candidate_structures, plot_candidate_structures
+
+metadata, results, components_df, candidates_df = analyze_candidate_structures(
+    frame,
+    value_col="value",
+    sampling_frequency=1.0,
+    sampling_period="1s",
+    window_size=256,
+    window_ids=[0],
+    association_options={
+        "max_fragment_time_gap_seconds": 8.0,
+        "max_fragment_frequency_gap_hz": 0.01,
+        "max_fragment_frequency_centroid_difference_hz": 0.02,
+        "max_fragment_orientation_difference_radians": 0.26,
+    },
+)
+print(components_df)
+print(candidates_df)
+plot_candidate_structures(results[0]).write_html("stft_candidates_window_0.html")
+```
+
+The candidate diagnostic keeps the original component IDs (`C1`, `C2`, ...)
+beside candidate IDs (`S1`, `S2`, ...), plus both DataFrames for auditing. These
+objects are neither normal nor anomalous at this stage. This local association
+reconstructs occurrences within a window; future HDBSCAN-style work would group
+similar candidates across many windows and is a separate problem.
 
 ## Controlled STFT versus MSST comparison
 

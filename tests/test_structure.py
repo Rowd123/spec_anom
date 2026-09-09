@@ -5,7 +5,9 @@ import pytest
 from spectral_anomaly import (
     AnalysisPeriod,
     MSSTResult,
+    associate_component_fragments,
     analyze_structural_windows,
+    candidates_to_dataframe,
     compare_stft_msst_structure,
     compare_structural_windows,
     component_features,
@@ -15,6 +17,7 @@ from spectral_anomaly import (
     fit_component_feature_scaler,
     plot_structural_window,
     plot_stft_msst_comparison,
+    plot_candidate_structures,
     prepare_analysis_windows,
     transform_component_features,
 )
@@ -350,3 +353,148 @@ def test_component_feature_scaling_excludes_ids_and_handles_axial_orientation():
     assert {"orientation_cos2", "orientation_sin2"}.issubset(raw_features)
     assert np.all(np.isfinite(scaled.to_numpy()))
     assert np.allclose(scaled.median(axis=0), 0.0)
+
+
+def fragmented_map(
+    fragments: list[tuple[slice, slice]], shape: tuple[int, int] = (30, 60)
+):
+    values = np.zeros(shape)
+    for frequency_slice, time_slice in fragments:
+        values[frequency_slice, time_slice] = 5.0
+    return extract_spectral_structure(
+        make_spectral_result(values),
+        representation="stft",
+        normalization_neighborhood=(9, 9),
+        tensor_sigma=(1.0, 1.0),
+        significance_threshold=2.0,
+        coherence_threshold=0.2,
+        minimum_component_area=1,
+    )
+
+
+def association(analysis, **overrides):
+    options = {
+        "max_fragment_time_gap_seconds": 2.0,
+        "max_fragment_frequency_gap_hz": 1.0,
+        "max_fragment_frequency_centroid_difference_hz": 1.0,
+        "max_fragment_orientation_difference_radians": 0.2,
+    }
+    options.update(overrides)
+    return associate_component_fragments(analysis, **options)
+
+
+def test_interrupted_line_associates_three_components_into_one_candidate():
+    analysis = fragmented_map(
+        [
+            (slice(10, 12), slice(2, 10)),
+            (slice(10, 12), slice(12, 20)),
+            (slice(10, 12), slice(22, 30)),
+        ]
+    )
+
+    result = association(analysis)
+    candidate = result.candidates[0]
+    print("interrupted line:", [item.component_ids for item in result.candidates])
+
+    assert len(analysis.components) == 3
+    assert len(result.candidates) == 1
+    assert candidate.component_ids == (1, 2, 3)
+    assert candidate.area_pixels == 48
+    assert candidate.active_duration_seconds == 24
+    assert candidate.time_span_seconds == 28
+    assert candidate.total_gap_duration_seconds == 4
+    assert candidate.maximum_gap_duration_seconds == 2
+    assert candidate.gap_fraction == pytest.approx(4 / 28)
+
+
+def test_fragments_beyond_time_gap_remain_separate_candidates():
+    analysis = fragmented_map(
+        [
+            (slice(10, 12), slice(2, 10)),
+            (slice(10, 12), slice(16, 24)),
+        ]
+    )
+
+    result = association(analysis, max_fragment_time_gap_seconds=5.0)
+    print("large gap:", [item.component_ids for item in result.candidates])
+
+    assert len(analysis.components) == 2
+    assert [item.component_ids for item in result.candidates] == [(1,), (2,)]
+
+
+def test_close_fragments_at_different_frequencies_remain_separate():
+    analysis = fragmented_map(
+        [
+            (slice(5, 7), slice(2, 10)),
+            (slice(18, 20), slice(12, 20)),
+        ]
+    )
+
+    result = association(analysis)
+    print("different frequencies:", [item.component_ids for item in result.candidates])
+
+    assert len(result.candidates) == 2
+
+
+def test_close_fragments_with_incompatible_orientations_remain_separate():
+    analysis = fragmented_map(
+        [
+            (slice(10, 12), slice(2, 10)),
+            (slice(5, 15), slice(12, 14)),
+        ]
+    )
+
+    result = association(
+        analysis,
+        max_fragment_frequency_gap_hz=20.0,
+        max_fragment_frequency_centroid_difference_hz=20.0,
+    )
+    print("different orientations:", [item.component_ids for item in result.candidates])
+
+    assert len(analysis.components) == 2
+    assert len(result.candidates) == 2
+
+
+def test_fragment_graph_association_is_explicitly_transitive():
+    analysis = fragmented_map(
+        [
+            (slice(10, 12), slice(2, 10)),
+            (slice(10, 12), slice(12, 20)),
+            (slice(10, 12), slice(22, 30)),
+        ]
+    )
+
+    result = association(analysis)
+    print("transitive chain:", [item.component_ids for item in result.candidates])
+
+    # C1 and C3 are 12 seconds apart, but C1--C2--C3 is one graph component.
+    assert len(result.candidates) == 1
+    assert result.candidates[0].fragment_count == 3
+
+
+def test_two_independent_fragmented_structures_make_two_candidates_and_tables():
+    analysis = fragmented_map(
+        [
+            (slice(5, 7), slice(2, 10)),
+            (slice(5, 7), slice(12, 20)),
+            (slice(20, 22), slice(3, 11)),
+            (slice(20, 22), slice(13, 21)),
+        ]
+    )
+
+    result = association(analysis)
+    print("two fragmented structures:", [item.component_ids for item in result.candidates])
+    components = components_to_dataframe({4: analysis})
+    candidates = candidates_to_dataframe({4: result})
+
+    assert len(components) == 4
+    assert len(candidates) == 2
+    assert candidates["component_ids"].tolist() == [(1, 2), (3, 4)]
+    assert (candidates["window_id"] == 4).all()
+    assert (candidates["representation"] == "stft").all()
+    assert np.allclose(
+        candidates["frequency_span_hz"],
+        candidates["frequency_max"] - candidates["frequency_min"],
+    )
+    figure = plot_candidate_structures(result)
+    assert len(figure.layout.annotations) == 6

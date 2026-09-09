@@ -28,6 +28,10 @@ class SpectralComponent:
     integrated_significance: float
     duration_seconds: float
     bandwidth_hz: float
+    time_span_seconds: float
+    active_duration_seconds: float
+    frequency_span_hz: float
+    support_bandwidth_hz: float
     frequency_centroid: float
     frequency_min: float
     frequency_max: float
@@ -37,6 +41,42 @@ class SpectralComponent:
     mean_coherence: float
     median_coherence: float
     coherence_q90: float
+    bounding_box: tuple[int, int, int, int]
+    normalized_aspect_ratio: float
+    orientation_radians: float
+    orientation_cos2: float
+    orientation_sin2: float
+    linearity: float
+
+
+@dataclass(frozen=True)
+class CandidateStructure:
+    """One physical candidate assembled from compatible local fragments."""
+
+    candidate_id: int
+    component_ids: tuple[int, ...]
+    component_count: int
+    fragment_count: int
+    area_pixels: int
+    integrated_significance: float
+    mean_significance: float
+    max_significance: float
+    duration_seconds: float
+    time_span_seconds: float
+    active_duration_seconds: float
+    total_gap_duration_seconds: float
+    maximum_gap_duration_seconds: float
+    gap_fraction: float
+    frequency_centroid: float
+    frequency_min: float
+    frequency_max: float
+    frequency_span_hz: float
+    support_bandwidth_hz: float
+    bandwidth_hz: float
+    mean_coherence: float
+    median_coherence: float
+    coherence_q90: float
+    relative_time_centroid: float
     bounding_box: tuple[int, int, int, int]
     normalized_aspect_ratio: float
     orientation_radians: float
@@ -84,6 +124,15 @@ class StructuralComparison:
 
 
 @dataclass(frozen=True)
+class CandidateStructureResult:
+    """Original component result plus graph-associated candidate structures."""
+
+    structural: StructuralSpectralResult
+    candidates: tuple[CandidateStructure, ...]
+    candidate_labels: np.ndarray
+
+
+@dataclass(frozen=True)
 class RobustFeatureScaler:
     """Reusable median/MAD parameters fitted on component feature columns."""
 
@@ -99,6 +148,10 @@ COMPONENT_FEATURE_COLUMNS = (
     "frequency_max",
     "bandwidth_hz",
     "duration_seconds",
+    "frequency_span_hz",
+    "support_bandwidth_hz",
+    "time_span_seconds",
+    "active_duration_seconds",
     "relative_time_centroid",
     "area_pixels",
     "mean_significance",
@@ -224,7 +277,10 @@ def _component_geometry(
     f_min, f_max = int(frequency_indices.min()), int(frequency_indices.max())
     t_min, t_max = int(time_indices.min()), int(time_indices.max())
     duration = (t_max - t_min + 1) * time_step
-    bandwidth = (f_max - f_min + 1) * frequency_step
+    active_duration = len(np.unique(time_indices)) * time_step
+    time_span = (t_max - t_min) * time_step
+    frequency_span = float(frequency_axis[f_max] - frequency_axis[f_min])
+    support_bandwidth = (f_max - f_min + 1) * frequency_step
     weight_sum = max(float(weights.sum()), np.finfo(float).eps)
     frequency_centroid = float(
         np.sum(frequency_axis[frequency_indices] * weights) / weight_sum
@@ -249,21 +305,30 @@ def _component_geometry(
             / max(total_bandwidth, np.finfo(float).eps),
         )
     )
-    covariance = np.cov(coordinates, rowvar=False, aweights=weights)
-    covariance = np.atleast_2d(covariance)
-    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
-    eigenvalues = np.maximum(eigenvalues, 0.0)
-    principal = eigenvectors[:, -1]
-    orientation = float(np.arctan2(principal[1], principal[0]))
-    linearity = float(
-        (eigenvalues[-1] - eigenvalues[0]) / (eigenvalues.sum() + np.finfo(float).eps)
-    )
+    if len(coordinates) < 2:
+        orientation = 0.0
+        linearity = 0.0
+    else:
+        covariance = np.cov(coordinates, rowvar=False, aweights=weights)
+        covariance = np.atleast_2d(covariance)
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        eigenvalues = np.maximum(eigenvalues, 0.0)
+        principal = eigenvectors[:, -1]
+        orientation = float(np.arctan2(principal[1], principal[0]))
+        linearity = float(
+            (eigenvalues[-1] - eigenvalues[0])
+            / (eigenvalues.sum() + np.finfo(float).eps)
+        )
     return SpectralComponent(
         label=label,
         area_pixels=int(component_mask.sum()),
         integrated_significance=float(weights.sum()),
         duration_seconds=float(duration),
-        bandwidth_hz=float(bandwidth),
+        bandwidth_hz=float(support_bandwidth),
+        time_span_seconds=float(time_span),
+        active_duration_seconds=float(active_duration),
+        frequency_span_hz=frequency_span,
+        support_bandwidth_hz=float(support_bandwidth),
         frequency_centroid=frequency_centroid,
         frequency_min=float(frequency_axis[f_min]),
         frequency_max=float(frequency_axis[f_max]),
@@ -276,7 +341,7 @@ def _component_geometry(
         bounding_box=(f_min, t_min, f_max + 1, t_max + 1),
         normalized_aspect_ratio=float(
             (duration / max(total_duration, np.finfo(float).eps))
-            / (bandwidth / max(total_bandwidth, np.finfo(float).eps))
+            / (support_bandwidth / max(total_bandwidth, np.finfo(float).eps))
         ),
         orientation_radians=orientation,
         orientation_cos2=float(np.cos(2 * orientation)),
@@ -293,7 +358,7 @@ def extract_spectral_structure(
     tensor_sigma: tuple[float, float] = (1.5, 1.5),
     significance_threshold: float = 3.0,
     coherence_threshold: float = 0.5,
-    minimum_component_area: int = 4,
+    minimum_component_area: int = 1,
     small_component_area: int = 16,
 ) -> StructuralSpectralResult:
     """Apply the same morphology chain to either STFT or MSST coefficients."""
@@ -433,6 +498,190 @@ def compare_stft_msst_structure(
     return StructuralComparison(stft=stft_result, msst=msst_result, metrics=metrics)
 
 
+def axial_orientation_distance(first: float, second: float) -> float:
+    """Return the smallest angular distance for orientations modulo pi."""
+    return float(0.5 * abs(np.angle(np.exp(2j * (first - second)))))
+
+
+def _interval_gap(
+    first_min: float, first_max: float, second_min: float, second_max: float
+) -> float:
+    return max(0.0, max(first_min, second_min) - min(first_max, second_max))
+
+
+def _component_time_bounds(
+    component: SpectralComponent, spectral_time: np.ndarray, time_step: float
+) -> tuple[float, float]:
+    _, start, _, stop = component.bounding_box
+    return float(spectral_time[start]), float(spectral_time[stop - 1] + time_step)
+
+
+def associate_component_fragments(
+    analysis: StructuralSpectralResult,
+    *,
+    max_fragment_time_gap_seconds: float = 0.0,
+    max_fragment_frequency_gap_hz: float = 0.0,
+    max_fragment_frequency_centroid_difference_hz: float = 0.0,
+    max_fragment_orientation_difference_radians: float = np.deg2rad(10.0),
+) -> CandidateStructureResult:
+    """Associate compatible fragments through connected components of a graph.
+
+    Pairwise edges require temporal, frequency-interval, centroid, and axial
+    orientation compatibility. Graph connectivity is deliberately transitive;
+    conservative thresholds are important because chains can otherwise bridge
+    two occurrences whose endpoints would not be directly compatible.
+    """
+    thresholds = {
+        "max_fragment_time_gap_seconds": max_fragment_time_gap_seconds,
+        "max_fragment_frequency_gap_hz": max_fragment_frequency_gap_hz,
+        "max_fragment_frequency_centroid_difference_hz": (
+            max_fragment_frequency_centroid_difference_hz
+        ),
+        "max_fragment_orientation_difference_radians": (
+            max_fragment_orientation_difference_radians
+        ),
+    }
+    if any(not np.isfinite(value) or value < 0 for value in thresholds.values()):
+        raise ValueError("fragment-association thresholds must be finite and non-negative")
+
+    components = analysis.components
+    labels = np.zeros_like(analysis.component_labels, dtype=np.int32)
+    if not components:
+        return CandidateStructureResult(analysis, (), labels)
+    spectral = analysis.spectral
+    time_step = (
+        float(np.median(np.diff(spectral.spectral_time)))
+        if len(spectral.spectral_time) > 1
+        else 0.0
+    )
+    frequency_step = (
+        float(np.median(np.diff(spectral.frequencies)))
+        if len(spectral.frequencies) > 1
+        else 0.0
+    )
+    parents = np.arange(len(components))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = int(parents[index])
+        return index
+
+    def union(first: int, second: int) -> None:
+        first_root, second_root = find(first), find(second)
+        if first_root != second_root:
+            parents[second_root] = first_root
+
+    for first_index, first in enumerate(components):
+        first_start, first_stop = _component_time_bounds(
+            first, spectral.spectral_time, time_step
+        )
+        for second_index in range(first_index + 1, len(components)):
+            second = components[second_index]
+            second_start, second_stop = _component_time_bounds(
+                second, spectral.spectral_time, time_step
+            )
+            time_gap = _interval_gap(
+                first_start, first_stop, second_start, second_stop
+            )
+            frequency_gap = _interval_gap(
+                first.frequency_min,
+                first.frequency_max,
+                second.frequency_min,
+                second.frequency_max,
+            )
+            centroid_difference = abs(
+                first.frequency_centroid - second.frequency_centroid
+            )
+            orientation_difference = axial_orientation_distance(
+                first.orientation_radians, second.orientation_radians
+            )
+            if (
+                time_gap <= max_fragment_time_gap_seconds
+                and frequency_gap <= max_fragment_frequency_gap_hz
+                and centroid_difference
+                <= max_fragment_frequency_centroid_difference_hz
+                and orientation_difference
+                <= max_fragment_orientation_difference_radians
+            ):
+                union(first_index, second_index)
+
+    groups: dict[int, list[SpectralComponent]] = {}
+    for index, component in enumerate(components):
+        groups.setdefault(find(index), []).append(component)
+
+    candidates: list[CandidateStructure] = []
+    total_duration = max(time_step * labels.shape[1], time_step)
+    total_bandwidth = max(frequency_step * labels.shape[0], frequency_step)
+    for candidate_id, group in enumerate(groups.values(), start=1):
+        component_ids = tuple(component.label for component in group)
+        candidate_mask = np.isin(analysis.component_labels, component_ids)
+        labels[candidate_mask] = candidate_id
+        geometry = _component_geometry(
+            candidate_id,
+            candidate_mask,
+            analysis.normalized_representation,
+            analysis.coherence,
+            spectral.frequencies,
+            spectral.spectral_time,
+            time_step,
+            frequency_step,
+            total_duration,
+            total_bandwidth,
+        )
+        _, time_indices = np.nonzero(candidate_mask)
+        active_columns = np.unique(time_indices)
+        temporal_bin_count = int(active_columns[-1] - active_columns[0] + 1)
+        active_bin_count = len(active_columns)
+        missing_columns = np.setdiff1d(
+            np.arange(active_columns[0], active_columns[-1] + 1), active_columns
+        )
+        if missing_columns.size:
+            split_points = np.flatnonzero(np.diff(missing_columns) > 1) + 1
+            maximum_gap_bins = max(
+                len(run) for run in np.split(missing_columns, split_points)
+            )
+        else:
+            maximum_gap_bins = 0
+        temporal_span = temporal_bin_count * time_step
+        active_duration = active_bin_count * time_step
+        candidates.append(
+            CandidateStructure(
+                candidate_id=candidate_id,
+                component_ids=component_ids,
+                component_count=len(group),
+                fragment_count=len(group),
+                area_pixels=geometry.area_pixels,
+                integrated_significance=geometry.integrated_significance,
+                mean_significance=geometry.mean_significance,
+                max_significance=geometry.max_significance,
+                duration_seconds=temporal_span,
+                time_span_seconds=temporal_span,
+                active_duration_seconds=active_duration,
+                total_gap_duration_seconds=temporal_span - active_duration,
+                maximum_gap_duration_seconds=maximum_gap_bins * time_step,
+                gap_fraction=1.0 - active_bin_count / temporal_bin_count,
+                frequency_centroid=geometry.frequency_centroid,
+                frequency_min=geometry.frequency_min,
+                frequency_max=geometry.frequency_max,
+                frequency_span_hz=geometry.frequency_span_hz,
+                support_bandwidth_hz=geometry.support_bandwidth_hz,
+                bandwidth_hz=geometry.support_bandwidth_hz,
+                mean_coherence=geometry.mean_coherence,
+                median_coherence=geometry.median_coherence,
+                coherence_q90=geometry.coherence_q90,
+                relative_time_centroid=geometry.relative_time_centroid,
+                bounding_box=geometry.bounding_box,
+                normalized_aspect_ratio=geometry.normalized_aspect_ratio,
+                orientation_radians=geometry.orientation_radians,
+                orientation_cos2=geometry.orientation_cos2,
+                orientation_sin2=geometry.orientation_sin2,
+                linearity=geometry.linearity,
+            )
+        )
+    return CandidateStructureResult(analysis, tuple(candidates), labels)
+
+
 def components_to_dataframe(
     analyses: Mapping[int, StructuralSpectralResult],
 ) -> pd.DataFrame:
@@ -450,6 +699,10 @@ def components_to_dataframe(
                     "integrated_significance": component.integrated_significance,
                     "duration_seconds": component.duration_seconds,
                     "bandwidth_hz": component.bandwidth_hz,
+                    "time_span_seconds": component.time_span_seconds,
+                    "active_duration_seconds": component.active_duration_seconds,
+                    "frequency_span_hz": component.frequency_span_hz,
+                    "support_bandwidth_hz": component.support_bandwidth_hz,
                     "frequency_centroid": component.frequency_centroid,
                     "frequency_min": component.frequency_min,
                     "frequency_max": component.frequency_max,
@@ -476,6 +729,93 @@ def components_to_dataframe(
         "representation",
         *COMPONENT_FEATURE_COLUMNS,
         "orientation_radians",
+        "frequency_bin_start",
+        "time_bin_start",
+        "frequency_bin_stop",
+        "time_bin_stop",
+    )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def candidates_to_dataframe(
+    results: Mapping[int, CandidateStructureResult],
+) -> pd.DataFrame:
+    """Return one row per associated candidate without discarding fragment IDs."""
+    rows: list[dict[str, object]] = []
+    for window_id, result in results.items():
+        for candidate in result.candidates:
+            f_start, t_start, f_stop, t_stop = candidate.bounding_box
+            rows.append(
+                {
+                    "window_id": window_id,
+                    "candidate_id": candidate.candidate_id,
+                    "representation": result.structural.representation,
+                    "component_ids": candidate.component_ids,
+                    "component_count": candidate.component_count,
+                    "fragment_count": candidate.fragment_count,
+                    "area_pixels": candidate.area_pixels,
+                    "integrated_significance": candidate.integrated_significance,
+                    "mean_significance": candidate.mean_significance,
+                    "max_significance": candidate.max_significance,
+                    "duration_seconds": candidate.duration_seconds,
+                    "time_span_seconds": candidate.time_span_seconds,
+                    "active_duration_seconds": candidate.active_duration_seconds,
+                    "total_gap_duration_seconds": candidate.total_gap_duration_seconds,
+                    "maximum_gap_duration_seconds": candidate.maximum_gap_duration_seconds,
+                    "gap_fraction": candidate.gap_fraction,
+                    "frequency_centroid": candidate.frequency_centroid,
+                    "frequency_min": candidate.frequency_min,
+                    "frequency_max": candidate.frequency_max,
+                    "frequency_span_hz": candidate.frequency_span_hz,
+                    "support_bandwidth_hz": candidate.support_bandwidth_hz,
+                    "bandwidth_hz": candidate.bandwidth_hz,
+                    "mean_coherence": candidate.mean_coherence,
+                    "median_coherence": candidate.median_coherence,
+                    "coherence_q90": candidate.coherence_q90,
+                    "relative_time_centroid": candidate.relative_time_centroid,
+                    "normalized_aspect_ratio": candidate.normalized_aspect_ratio,
+                    "orientation_radians": candidate.orientation_radians,
+                    "orientation_cos2": candidate.orientation_cos2,
+                    "orientation_sin2": candidate.orientation_sin2,
+                    "linearity": candidate.linearity,
+                    "frequency_bin_start": f_start,
+                    "time_bin_start": t_start,
+                    "frequency_bin_stop": f_stop,
+                    "time_bin_stop": t_stop,
+                }
+            )
+    columns = (
+        "window_id",
+        "candidate_id",
+        "representation",
+        "component_ids",
+        "component_count",
+        "fragment_count",
+        "area_pixels",
+        "integrated_significance",
+        "mean_significance",
+        "max_significance",
+        "duration_seconds",
+        "time_span_seconds",
+        "active_duration_seconds",
+        "total_gap_duration_seconds",
+        "maximum_gap_duration_seconds",
+        "gap_fraction",
+        "frequency_centroid",
+        "frequency_min",
+        "frequency_max",
+        "frequency_span_hz",
+        "support_bandwidth_hz",
+        "bandwidth_hz",
+        "mean_coherence",
+        "median_coherence",
+        "coherence_q90",
+        "relative_time_centroid",
+        "normalized_aspect_ratio",
+        "orientation_radians",
+        "orientation_cos2",
+        "orientation_sin2",
+        "linearity",
         "frequency_bin_start",
         "time_bin_start",
         "frequency_bin_stop",
@@ -634,6 +974,30 @@ def analyze_structural_components(
     """Run structural analysis and return its component population table."""
     metadata, analyses = analyze_structural_windows(data, **options)
     return metadata, analyses, components_to_dataframe(analyses)
+
+
+def analyze_candidate_structures(
+    data: pd.DataFrame,
+    *,
+    association_options: Mapping[str, float] | None = None,
+    **analysis_options: object,
+) -> tuple[
+    pd.DataFrame,
+    dict[int, CandidateStructureResult],
+    pd.DataFrame,
+    pd.DataFrame,
+]:
+    """Extract components, associate local fragments, and return both tables."""
+    metadata, analyses = analyze_structural_windows(data, **analysis_options)
+    results = {
+        window_id: associate_component_fragments(
+            analysis, **dict(association_options or {})
+        )
+        for window_id, analysis in analyses.items()
+    }
+    components = components_to_dataframe(analyses)
+    candidates = candidates_to_dataframe(results)
+    return metadata, results, components, candidates
 
 
 def compare_structural_windows(
@@ -836,6 +1200,152 @@ def plot_structural_window(analysis: StructuralSpectralResult):
             f"{analysis.representation.upper()} structure extraction "
             "(coherence is not an anomaly score)"
         ),
+        height=850,
+        template="plotly_white",
+        hovermode="closest",
+    )
+    return figure
+
+
+def plot_candidate_structures(result: CandidateStructureResult):
+    """Compare original connected fragments with their associated candidates."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    analysis = result.structural
+    spectral = analysis.spectral
+    figure = make_subplots(
+        rows=2,
+        cols=3,
+        subplot_titles=(
+            "Signal",
+            f"{analysis.representation.upper()} raw",
+            f"{analysis.representation.upper()} normalized",
+            "Connected components",
+            "Candidate structures",
+            "Candidate features",
+        ),
+        specs=[[{}, {}, {}], [{}, {}, {"type": "table"}]],
+        horizontal_spacing=0.07,
+        vertical_spacing=0.14,
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=spectral.period.time,
+            y=spectral.processed_signal,
+            mode="lines",
+            name="processed signal",
+        ),
+        row=1,
+        col=1,
+    )
+    for values, colorscale, column, limits in (
+        (np.abs(analysis.raw_representation), "Viridis", 2, None),
+        (analysis.normalized_representation, "Magma", 3, (0.0, 12.0)),
+    ):
+        figure.add_trace(
+            go.Heatmap(
+                x=spectral.spectral_time,
+                y=spectral.frequencies,
+                z=values,
+                colorscale=colorscale,
+                zmin=None if limits is None else limits[0],
+                zmax=None if limits is None else limits[1],
+                showscale=False,
+            ),
+            row=1,
+            col=column,
+        )
+    overlays = (
+        (analysis.component_labels, analysis.components, "C", 1),
+        (result.candidate_labels, result.candidates, "S", 2),
+    )
+    for label_map, objects, prefix, column in overlays:
+        figure.add_trace(
+            go.Heatmap(
+                x=spectral.spectral_time,
+                y=spectral.frequencies,
+                z=np.abs(analysis.raw_representation),
+                colorscale="Greys",
+                showscale=False,
+                hoverinfo="skip",
+            ),
+            row=2,
+            col=column,
+        )
+        figure.add_trace(
+            go.Heatmap(
+                x=spectral.spectral_time,
+                y=spectral.frequencies,
+                z=np.where(label_map > 0, label_map, np.nan),
+                colorscale="Rainbow",
+                opacity=0.65,
+                showscale=False,
+            ),
+            row=2,
+            col=column,
+        )
+        if objects:
+            x_values = [
+                spectral.spectral_time[0]
+                + item.relative_time_centroid
+                * (spectral.spectral_time[-1] - spectral.spectral_time[0])
+                for item in objects
+            ]
+            ids = [
+                item.label if prefix == "C" else item.candidate_id for item in objects
+            ]
+            figure.add_trace(
+                go.Scatter(
+                    x=x_values,
+                    y=[item.frequency_centroid for item in objects],
+                    mode="markers+text",
+                    text=[f"{prefix}{identifier}" for identifier in ids],
+                    textposition="top center",
+                    marker={
+                        "size": 8,
+                        "color": "white",
+                        "line": {"color": "black"},
+                    },
+                    name=f"{prefix} ID",
+                ),
+                row=2,
+                col=column,
+            )
+    candidate_table = candidates_to_dataframe({0: result})
+    table_columns = (
+        "candidate_id",
+        "component_ids",
+        "frequency_centroid",
+        "duration_seconds",
+        "active_duration_seconds",
+        "gap_fraction",
+        "linearity",
+    )
+    figure.add_trace(
+        go.Table(
+            header={"values": list(table_columns), "align": "left"},
+            cells={
+                "values": [candidate_table[column] for column in table_columns],
+                "align": "left",
+            },
+        ),
+        row=2,
+        col=3,
+    )
+    for row, columns in ((1, (1, 2, 3)), (2, (1, 2))):
+        for column in columns:
+            is_signal = (row, column) == (1, 1)
+            figure.update_xaxes(
+                title_text="time" if is_signal else "time (s)", row=row, col=column
+            )
+            figure.update_yaxes(
+                title_text="signal" if is_signal else "frequency (Hz)",
+                row=row,
+                col=column,
+            )
+    figure.update_layout(
+        title="Connected fragments and candidate structures (no anomaly decision)",
         height=850,
         template="plotly_white",
         hovermode="closest",
