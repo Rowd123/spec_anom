@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from spectral_anomaly import analyze_structural_windows, plot_structural_window
+from spectral_anomaly import analyze_structural_components, plot_structural_window
 
 from basic_usage import make_example_data
 
@@ -13,7 +13,7 @@ from basic_usage import make_example_data
 def main(output: Path, window_id: int | None = None, show: bool = False) -> None:
     """Run the morphology prototype and plot one quality-valid window."""
     data = make_example_data()
-    metadata, analyses = analyze_structural_windows(
+    metadata, analyses, components = analyze_structural_components(
         data,
         value_col="value",
         quality_col="quality",
@@ -25,8 +25,9 @@ def main(output: Path, window_id: int | None = None, show: bool = False) -> None
         min_valid_ratio=0.98,
         min_valid_samples=250,
         max_interpolation_gap=2,
-        msst_options={
-            "iteration_count": 3,
+        representation="stft",
+        window_ids=None if window_id is None else [window_id],
+        transform_options={
             "window": "hann",
             "n_fft": 256,
             "window_length": 128,
@@ -47,8 +48,9 @@ def main(output: Path, window_id: int | None = None, show: bool = False) -> None
     if selected_id not in analyses:
         raise ValueError(f"window {selected_id} is not quality-valid")
 
-    feature_columns = list(analyses[selected_id].features)
-    print(metadata.loc[metadata["accepted"], feature_columns].to_string())
+    print(metadata.loc[[selected_id], ["start_time", "end_time"]].to_string())
+    print("\nExtracted component population:")
+    print(components[components["window_id"] == selected_id].to_string(index=False))
     figure = plot_structural_window(analyses[selected_id])
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.write_html(output, include_plotlyjs=True, full_html=True)

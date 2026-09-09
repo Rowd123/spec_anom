@@ -8,10 +8,15 @@ from spectral_anomaly import (
     analyze_structural_windows,
     compare_stft_msst_structure,
     compare_structural_windows,
+    component_features,
+    components_to_dataframe,
     extract_msst_structure,
+    extract_spectral_structure,
+    fit_component_feature_scaler,
     plot_structural_window,
     plot_stft_msst_comparison,
     prepare_analysis_windows,
+    transform_component_features,
 )
 from spectral_anomaly import structure as structure_module
 
@@ -156,7 +161,7 @@ def test_pipeline_analyzes_every_quality_valid_window_and_plots_six_panels(
             for window_id in periods
         }
 
-    monkeypatch.setattr(structure_module, "analyze_msst_periods", fake_analyze)
+    monkeypatch.setattr(structure_module, "analyze_stft_periods", fake_analyze)
     metadata, analyses = analyze_structural_windows(
         data,
         value_col="value",
@@ -170,7 +175,8 @@ def test_pipeline_analyzes_every_quality_valid_window_and_plots_six_panels(
     assert set(analyses) == {0, 1}
     figure = plot_structural_window(analyses[0])
     assert len(figure.layout.annotations) == 6
-    assert len(figure.data) == 7
+    assert len(figure.data) >= 7
+    assert analyses[0].representation == "stft"
 
 
 def test_stft_representation_skips_msst_analysis(monkeypatch):
@@ -229,3 +235,118 @@ def test_comparison_exposes_fragmentation_metrics_and_nine_panels():
     figure = plot_stft_msst_comparison(comparison)
     assert len(figure.layout.annotations) == 9
     assert len(figure.data) == 11
+
+
+def controlled_structure(values: np.ndarray):
+    return extract_spectral_structure(
+        make_spectral_result(values),
+        representation="stft",
+        normalization_neighborhood=(9, 9),
+        tensor_sigma=(1.0, 1.0),
+        significance_threshold=2.0,
+        coherence_threshold=0.2,
+        minimum_component_area=3,
+    )
+
+
+def test_two_separate_structures_produce_two_component_rows_with_frequency_position():
+    rng = np.random.default_rng(5)
+    values = np.abs(rng.normal(1, 0.1, (40, 60)))
+    values[8:10, 5:25] += 2
+    values[27:29, 35:55] += 2
+
+    analysis = controlled_structure(values)
+    table = components_to_dataframe({7: analysis})
+
+    assert len(analysis.components) == 2
+    assert table["window_id"].tolist() == [7, 7]
+    assert table["component_id"].tolist() == [1, 2]
+    assert table.loc[0, "frequency_centroid"] < table.loc[1, "frequency_centroid"]
+    assert (table["frequency_min"] <= table["frequency_centroid"]).all()
+    assert (table["frequency_centroid"] <= table["frequency_max"]).all()
+    assert (table["mean_coherence"] <= table["coherence_q90"]).all()
+    assert (table["mean_significance"] <= table["max_significance"]).all()
+    assert table["relative_time_centroid"].between(0, 1).all()
+
+
+def test_same_geometry_at_different_frequencies_has_distinct_centroids():
+    rng = np.random.default_rng(6)
+    values = np.abs(rng.normal(1, 0.1, (40, 60)))
+    values[8:10, 5:25] += 2
+    values[27:29, 5:25] += 2
+
+    selected = sorted(
+        controlled_structure(values).components,
+        key=lambda item: item.area_pixels,
+        reverse=True,
+    )[:2]
+    low, high = sorted(selected, key=lambda item: item.frequency_centroid)
+
+    assert low.area_pixels == pytest.approx(high.area_pixels, rel=0.1)
+    assert low.linearity == pytest.approx(high.linearity, rel=0.02)
+    assert high.frequency_centroid - low.frequency_centroid > 15
+
+
+def test_horizontal_and_vertical_components_are_linear_with_axial_orientations():
+    rng = np.random.default_rng(7)
+    horizontal = np.abs(rng.normal(1, 0.1, (40, 60)))
+    vertical = np.abs(rng.normal(1, 0.1, (40, 60)))
+    horizontal[18:20, 10:50] += 2
+    vertical[5:35, 29:31] += 2
+
+    horizontal_component = max(
+        controlled_structure(horizontal).components, key=lambda item: item.area_pixels
+    )
+    vertical_component = max(
+        controlled_structure(vertical).components, key=lambda item: item.area_pixels
+    )
+
+    assert horizontal_component.linearity > 0.9
+    assert vertical_component.linearity > 0.9
+    assert horizontal_component.orientation_cos2 > 0.9
+    assert vertical_component.orientation_cos2 < -0.9
+    assert abs(horizontal_component.orientation_sin2) < 0.1
+    assert abs(vertical_component.orientation_sin2) < 0.1
+
+
+def test_amplitude_changes_significance_without_becoming_an_anomaly_label():
+    def extract(amplitude):
+        rng = np.random.default_rng(9)
+        values = np.abs(rng.normal(1, 0.35, (40, 60)))
+        values[18:20, 10:50] += amplitude
+        result = extract_spectral_structure(
+            make_spectral_result(values),
+            representation="stft",
+            normalization_neighborhood=(9, 9),
+            tensor_sigma=(1.0, 1.0),
+            significance_threshold=1.2,
+            coherence_threshold=0.2,
+            minimum_component_area=10,
+        )
+        return max(result.components, key=lambda item: item.area_pixels)
+
+    weak, strong = extract(0.8), extract(1.6)
+
+    assert weak.frequency_centroid == pytest.approx(strong.frequency_centroid, abs=1.0)
+    assert weak.orientation_cos2 == pytest.approx(strong.orientation_cos2, abs=0.15)
+    assert weak.mean_significance < strong.mean_significance
+    assert not hasattr(weak, "anomaly")
+
+
+def test_component_feature_scaling_excludes_ids_and_handles_axial_orientation():
+    rng = np.random.default_rng(10)
+    values = np.abs(rng.normal(1, 0.1, (40, 60)))
+    values[8:10, 5:25] += 2
+    values[27:29, 35:55] += 2
+    table = components_to_dataframe({3: controlled_structure(values)})
+
+    raw_features = component_features(table)
+    scaler = fit_component_feature_scaler(table)
+    scaled = transform_component_features(table, scaler)
+
+    assert "window_id" not in raw_features
+    assert "component_id" not in raw_features
+    assert "orientation_radians" not in raw_features
+    assert {"orientation_cos2", "orientation_sin2"}.issubset(raw_features)
+    assert np.all(np.isfinite(scaled.to_numpy()))
+    assert np.allclose(scaled.median(axis=0), 0.0)

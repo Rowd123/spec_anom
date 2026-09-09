@@ -26,7 +26,7 @@ def main(window_id: int, output: Path | None = None, show: bool = False) -> None
         min_valid_samples=250,
         max_interpolation_gap=2,
         window_ids=[window_id],
-        msst_options={
+        transform_options={
             "iteration_count": 3,
             "window": "hann",
             "n_fft": 256,

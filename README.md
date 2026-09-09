@@ -1,7 +1,8 @@
-# Spectral anomaly — energy and MSST morphology
+# Spectral anomaly — STFT morphology with MSST comparison
 
 This package provides quality-aware signal windowing, the historical causal
-energy detector, STFT/MSST transforms, and a first morphology prototype. Energy
+energy detector, STFT/MSST transforms, and a first morphology prototype. STFT is
+the structural default; MSST remains available for controlled comparisons. Energy
 scoring remains available but is no longer required to select windows for the
 structural MSST path. Classification and clustering are intentionally out of
 scope for the prototype.
@@ -26,7 +27,7 @@ The morphology prototype adds a parallel, non-breaking path:
 ```text
 raw data
   -> prepare_analysis_windows (quality only)
-  -> MSST for every accepted window
+  -> STFT for every accepted window (MSST optional)
   -> local robust normalization
   -> structure tensor
   -> significant connected components
@@ -36,12 +37,15 @@ raw data
 
 Window acceptance in this path depends only on NaNs, quality flags, valid-sample
 requirements, and interpolation-gap limits. Neither energy nor the historical
-`suspicious` flag decides whether MSST is run.
+`suspicious` flag decides whether a spectral transform is run.
 
 ### Prototype feature rationale
 
-The deliberately small first feature set is intended for visual validation, not
-as a final anomaly score:
+The deliberately small window-level feature set is intended for visual
+validation, not as a final anomaly score. In particular, **coherent structure is
+not synonymous with anomaly**: nominal signals may contain persistent coherent
+bands. Coherence and significance help segment and describe objects; only a
+later model of historically observed component families can assess novelty.
 
 | Feature | Geometric meaning | Expected noise/structure behavior |
 |---|---|---|
@@ -92,7 +96,8 @@ metadata, analyses = analyze_structural_windows(
     sampling_period="1s",
     window_size=256,
     overlap=128,
-    msst_options={"window_length": 128, "n_fft": 256, "hop_length": 4},
+    representation="stft",  # default; use "msst" only for comparison
+    transform_options={"window_length": 128, "n_fft": 256, "hop_length": 4},
 )
 
 # All quality-valid windows are present, regardless of their energy score.
@@ -100,12 +105,71 @@ window_id = next(iter(analyses))
 item = analyses[window_id]
 print(item.features)
 print(item.components)
-plot_structural_window(item).write_html("msst_structure_window.html")
+plot_structural_window(item).write_html("stft_structure_window.html")
 ```
 
-The six panels show the time signal, STFT, MSST, locally normalized MSST,
-structure coherence, and retained components overlaid on the MSST. Run the full
-example with `python examples/structure_usage.py`.
+The six panels show the time signal, the selected raw representation, its local
+normalization, structure coherence, retained components with their IDs, and a
+component feature table. `representation="stft"` is the default; pass `"msst"`
+explicitly for the experimental alternative. Run the full example with
+`python examples/structure_usage.py`.
+
+### Component population for a future normal-structure model
+
+`analyze_structural_components` returns `(metadata, analyses, components)`, where
+`components` has one row per `(window_id, component_id)`. It includes frequency
+centroid/min/max, relative time centroid, duration, bandwidth, area, mean/max/
+integrated local significance, mean/median/q90 coherence, normalized aspect
+ratio, linearity, the interpretable raw orientation, and the clustering-safe
+axial encoding `cos(2 theta)`, `sin(2 theta)`.
+
+```python
+from spectral_anomaly import (
+    analyze_structural_components,
+    component_features,
+    fit_component_feature_scaler,
+    transform_component_features,
+)
+
+metadata, analyses, components = analyze_structural_components(
+    frame,
+    value_col="value",
+    sampling_frequency=1.0,
+    sampling_period="1s",
+    window_size=256,
+)
+
+# Identification columns and the raw angle are excluded from X automatically.
+X = component_features(components)
+scaler = fit_component_feature_scaler(components)
+X_scaled = transform_component_features(components, scaler)
+```
+
+The scaler applies `log1p` by default to non-negative, typically right-skewed
+size/intensity variables (area, duration, bandwidth, significance and aspect
+ratio), then fits a per-column median and `1.4826 * MAD`. Frequency positions,
+relative time, coherence, linearity, and axial orientation coordinates are not
+log-transformed. Constant training columns receive scale 1 rather than creating
+NaNs. The fitted scaler is reusable on later windows; no labels, clusters, or
+anomaly decisions are produced.
+
+Some candidate features are intentionally redundant: frequency min/max overlap
+with centroid and bandwidth; area overlaps with duration, bandwidth and aspect
+ratio; mean/max/integrated significance are related; and mean/median/q90
+coherence summarize the same distribution. Before clustering, correlation and
+stability analyses should select a smaller subset to avoid overweighting one
+physical property merely because it has several correlated columns.
+
+Segmentation still depends strongly on neighborhood size, tensor scale,
+significance/coherence thresholds, STFT resolution and minimum area. Components
+can split, merge, or disappear when these change, and overlapping physical
+phenomena can become a single connected object. Before trying HDBSCAN on real
+data, validate repeatability across nominal recordings, operating regimes,
+signal-to-noise ratios and nearby parameter values; check feature stability and
+missing frequency bands; fit scaling on training periods only; and quantify how
+often each learned family occurs per window. A future cluster label `-1` must
+mean only “not assigned to a dense learned family,” never automatic physical
+anomaly.
 
 ## Controlled STFT versus MSST comparison
 
@@ -132,7 +196,7 @@ metadata, comparisons = compare_structural_windows(
     window_size=256,
     overlap=128,
     window_ids=[0],
-    msst_options={"window_length": 128, "n_fft": 256, "hop_length": 4},
+    transform_options={"window_length": 128, "n_fft": 256, "hop_length": 4},
     structure_options={"small_component_area": 16},
 )
 comparison = comparisons[0]
