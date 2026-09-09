@@ -3,10 +3,12 @@ import pandas as pd
 import pytest
 
 from spectral_anomaly import (
+    AnalysisPeriod,
     WindowData,
     analyze_msst_monitoring_data,
     analyze_msst_monitoring_period,
     analyze_msst_periods,
+    analyze_stft_periods,
     plot_msst_periods,
     prepare_analysis_periods,
     prepare_monitoring_period,
@@ -171,3 +173,26 @@ def test_monitoring_data_pipeline_preprocesses_transforms_and_saves_html(
     assert analysis.msst.shape == (3, 4)
     assert len(figure.data) == 4
     assert output.read_text().startswith("<!doctype html>")
+
+
+def test_stft_period_analysis_does_not_compute_synchrosqueezing(monkeypatch):
+    period = AnalysisPeriod(
+        time=pd.RangeIndex(8),
+        signal=np.arange(8.0),
+        observed_mask=np.ones(8, dtype=bool),
+        interpolated_mask=np.zeros(8, dtype=bool),
+        anomaly_mask=np.zeros(8, dtype=bool),
+        source_window_ids=(),
+    )
+
+    def fake_stft_only(signal, sampling_frequency, **options):
+        return np.ones((3, 4), dtype=np.complex64), np.array([0.0, 0.5, 1.0])
+
+    monkeypatch.setattr(msst_module, "stft_only", fake_stft_only)
+    analyses = analyze_stft_periods(
+        {0: period}, sampling_frequency=2.0, center=False, hop_length=2
+    )
+
+    assert analyses[0].stft.shape == (3, 4)
+    assert analyses[0].msst.shape == (0, 0)
+    assert np.array_equal(analyses[0].spectral_time, [0.0, 1.0, 2.0, 3.0])

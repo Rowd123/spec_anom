@@ -4,14 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from numbers import Real
-from typing import Hashable, Iterable, Mapping
+from typing import Hashable, Iterable, Literal, Mapping
 
 import numpy as np
 import pandas as pd
 from scipy import ndimage
 
 from .energy import WindowData, prepare_analysis_windows
-from .msst import AnalysisPeriod, MSSTResult, analyze_msst_periods
+from .msst import (
+    AnalysisPeriod,
+    MSSTResult,
+    analyze_msst_periods,
+    analyze_stft_periods,
+)
 
 
 @dataclass(frozen=True)
@@ -31,9 +36,10 @@ class SpectralComponent:
 
 @dataclass(frozen=True)
 class StructuralMSSTResult:
-    """MSST maps, morphology, and window-level prototype features."""
+    """Generic spectral map, morphology, and window-level prototype features."""
 
     spectral: MSSTResult
+    representation: Literal["stft", "msst"]
     normalized_msst: np.ndarray
     coherence: np.ndarray
     orientation: np.ndarray
@@ -42,22 +48,41 @@ class StructuralMSSTResult:
     components: tuple[SpectralComponent, ...]
     features: Mapping[str, float]
 
+    @property
+    def raw_representation(self) -> np.ndarray:
+        """Return the complex map on which morphology was computed."""
+        return self.spectral.stft if self.representation == "stft" else self.spectral.msst
 
-def normalize_msst_local(
-    msst: np.ndarray,
+    @property
+    def normalized_representation(self) -> np.ndarray:
+        """Generic name for the locally normalized representation."""
+        return self.normalized_msst
+
+
+@dataclass(frozen=True)
+class StructuralComparison:
+    """Morphology results for STFT and MSST of the exact same window."""
+
+    stft: StructuralMSSTResult
+    msst: StructuralMSSTResult
+    metrics: pd.DataFrame
+
+
+def normalize_spectral_map_local(
+    spectral_map: np.ndarray,
     *,
     neighborhood: tuple[int, int] = (9, 9),
     clip: float | None = 12.0,
 ) -> np.ndarray:
-    """Return a robust local significance map of ``abs(msst)``.
+    """Return a robust local significance map of a complex or magnitude map.
 
     A two-dimensional running median estimates the local background and a
     running MAD estimates its scale. Only excess above the background is kept.
     This deliberately makes no global white/stationary-noise assumption.
     """
-    magnitude = np.abs(np.asarray(msst))
+    magnitude = np.abs(np.asarray(spectral_map))
     if magnitude.ndim != 2 or not np.all(np.isfinite(magnitude)):
-        raise ValueError("msst must be a finite two-dimensional array")
+        raise ValueError("spectral_map must be a finite two-dimensional array")
     if len(neighborhood) != 2 or any(size < 3 or size % 2 == 0 for size in neighborhood):
         raise ValueError("neighborhood sizes must be odd integers of at least 3")
     if clip is not None and (not np.isfinite(clip) or clip <= 0):
@@ -76,6 +101,16 @@ def normalize_msst_local(
         1.4826 * mad, floor
     )
     return np.minimum(significance, clip) if clip is not None else significance
+
+
+def normalize_msst_local(
+    msst: np.ndarray,
+    *,
+    neighborhood: tuple[int, int] = (9, 9),
+    clip: float | None = 12.0,
+) -> np.ndarray:
+    """Backward-compatible alias for local spectral-map normalization."""
+    return normalize_spectral_map_local(msst, neighborhood=neighborhood, clip=clip)
 
 
 def compute_structure_tensor(
@@ -166,25 +201,36 @@ def _component_geometry(
     )
 
 
-def extract_msst_structure(
+def extract_spectral_structure(
     spectral: MSSTResult,
     *,
+    representation: Literal["stft", "msst"] = "msst",
     normalization_neighborhood: tuple[int, int] = (9, 9),
     tensor_sigma: tuple[float, float] = (1.5, 1.5),
     significance_threshold: float = 3.0,
     coherence_threshold: float = 0.5,
     minimum_component_area: int = 4,
+    small_component_area: int = 16,
 ) -> StructuralMSSTResult:
-    """Extract a small orientation-neutral morphology feature set from an MSST."""
+    """Apply the same morphology chain to either STFT or MSST coefficients."""
+    if representation not in {"stft", "msst"}:
+        raise ValueError("representation must be 'stft' or 'msst'")
     if significance_threshold < 0 or not np.isfinite(significance_threshold):
         raise ValueError("significance_threshold must be finite and non-negative")
     if not 0 <= coherence_threshold <= 1:
         raise ValueError("coherence_threshold must be in [0, 1]")
     if minimum_component_area < 1:
         raise ValueError("minimum_component_area must be positive")
+    if small_component_area < minimum_component_area:
+        raise ValueError("small_component_area must be at least minimum_component_area")
 
-    normalized = normalize_msst_local(
-        spectral.msst, neighborhood=normalization_neighborhood
+    raw_representation = (
+        spectral.stft if representation == "stft" else spectral.msst
+    )
+    if raw_representation.size == 0:
+        raise ValueError(f"{representation} coefficients are not available")
+    normalized = normalize_spectral_map_local(
+        raw_representation, neighborhood=normalization_neighborhood
     )
     coherence, orientation, _, _ = compute_structure_tensor(
         normalized, sigma=tensor_sigma
@@ -242,6 +288,11 @@ def extract_msst_structure(
     )
     areas = [component.area_pixels for component in components]
     integrated = [component.integrated_significance for component in components]
+    median_area = float(np.median(areas)) if areas else 0.0
+    maximum_area = float(max(areas, default=0))
+    small_fraction = (
+        float(np.mean(np.asarray(areas) <= small_component_area)) if areas else 0.0
+    )
     features = {
         "weighted_mean_coherence": weighted_coherence,
         "coherence_q90": float(np.quantile(active_coherence, 0.9))
@@ -254,9 +305,13 @@ def extract_msst_structure(
         "largest_component_significance_fraction": float(
             max(integrated, default=0.0) / max(amplitude_sum, np.finfo(float).eps)
         ),
+        "median_component_area": median_area,
+        "max_component_area": maximum_area,
+        "small_component_fraction": small_fraction,
     }
     return StructuralMSSTResult(
         spectral=spectral,
+        representation=representation,
         normalized_msst=normalized,
         coherence=coherence,
         orientation=orientation,
@@ -265,6 +320,30 @@ def extract_msst_structure(
         components=components,
         features=features,
     )
+
+
+def extract_msst_structure(
+    spectral: MSSTResult, **options: object
+) -> StructuralMSSTResult:
+    """Backward-compatible MSST-specific morphology wrapper."""
+    return extract_spectral_structure(spectral, representation="msst", **options)
+
+
+def compare_stft_msst_structure(
+    spectral: MSSTResult, **structure_options: object
+) -> StructuralComparison:
+    """Compare STFT and MSST morphology from one shared spectral transform."""
+    stft_result = extract_spectral_structure(
+        spectral, representation="stft", **structure_options
+    )
+    msst_result = extract_spectral_structure(
+        spectral, representation="msst", **structure_options
+    )
+    metrics = pd.DataFrame(
+        {"stft": stft_result.features, "msst": msst_result.features}
+    )
+    metrics["msst_minus_stft"] = metrics["msst"] - metrics["stft"]
+    return StructuralComparison(stft=stft_result, msst=msst_result, metrics=metrics)
 
 
 def analyze_structural_windows(
@@ -280,10 +359,14 @@ def analyze_structural_windows(
     min_valid_ratio: float = 0.9,
     min_valid_samples: int | None = None,
     max_interpolation_gap: int = 3,
+    representation: Literal["stft", "msst"] = "msst",
+    window_ids: Iterable[int] | None = None,
     msst_options: Mapping[str, object] | None = None,
     structure_options: Mapping[str, object] | None = None,
 ) -> tuple[pd.DataFrame, dict[int, StructuralMSSTResult]]:
-    """Analyze every quality-valid window, independently of energy or score."""
+    """Analyze every quality-valid window with the selected representation."""
+    if representation not in {"stft", "msst"}:
+        raise ValueError("representation must be 'stft' or 'msst'")
     metadata, windows = prepare_analysis_windows(
         data,
         value_col=value_col,
@@ -296,6 +379,7 @@ def analyze_structural_windows(
         min_valid_samples=min_valid_samples,
         max_interpolation_gap=max_interpolation_gap,
     )
+    selected_ids = None if window_ids is None else set(window_ids)
     periods = {
         window_id: AnalysisPeriod(
             time=window.time,
@@ -306,14 +390,30 @@ def analyze_structural_windows(
             source_window_ids=(window_id,),
         )
         for window_id, window in windows.items()
+        if selected_ids is None or window_id in selected_ids
     }
-    spectral = analyze_msst_periods(
-        periods,
-        sampling_frequency=sampling_frequency,
-        **dict(msst_options or {}),
-    )
+    transform_options = dict(msst_options or {})
+    if representation == "stft":
+        transform_options.pop("iteration_count", None)
+        transform_options.pop("gamma", None)
+        transform_options.pop("return_map", None)
+        spectral = analyze_stft_periods(
+            periods,
+            sampling_frequency=sampling_frequency,
+            **transform_options,
+        )
+    else:
+        spectral = analyze_msst_periods(
+            periods,
+            sampling_frequency=sampling_frequency,
+            **transform_options,
+        )
     analyses = {
-        window_id: extract_msst_structure(item, **dict(structure_options or {}))
+        window_id: extract_spectral_structure(
+            item,
+            representation=representation,
+            **dict(structure_options or {}),
+        )
         for window_id, item in spectral.items()
     }
     feature_rows = pd.DataFrame(
@@ -322,6 +422,67 @@ def analyze_structural_windows(
     for column in feature_rows:
         metadata.loc[feature_rows.index, column] = feature_rows[column]
     return metadata, analyses
+
+
+def compare_structural_windows(
+    data: pd.DataFrame,
+    *,
+    value_col: Hashable,
+    sampling_frequency: float,
+    quality_col: Hashable | None = None,
+    valid_quality_flags: Iterable[object] | None = None,
+    sampling_period: pd.Timedelta | str | Real | None = None,
+    window_size: int = 256,
+    overlap: int = 0,
+    min_valid_ratio: float = 0.9,
+    min_valid_samples: int | None = None,
+    max_interpolation_gap: int = 3,
+    window_ids: Iterable[int] | None = None,
+    msst_options: Mapping[str, object] | None = None,
+    structure_options: Mapping[str, object] | None = None,
+) -> tuple[pd.DataFrame, dict[int, StructuralComparison]]:
+    """Compare STFT/MSST morphology on every identical quality-valid window."""
+    metadata, windows = prepare_analysis_windows(
+        data,
+        value_col=value_col,
+        quality_col=quality_col,
+        valid_quality_flags=valid_quality_flags,
+        sampling_period=sampling_period,
+        window_size=window_size,
+        overlap=overlap,
+        min_valid_ratio=min_valid_ratio,
+        min_valid_samples=min_valid_samples,
+        max_interpolation_gap=max_interpolation_gap,
+    )
+    selected_ids = None if window_ids is None else set(window_ids)
+    periods = {
+        window_id: AnalysisPeriod(
+            time=window.time,
+            signal=window.signal,
+            observed_mask=window.observed_mask,
+            interpolated_mask=window.interpolated_mask,
+            anomaly_mask=np.zeros(len(window.signal), dtype=bool),
+            source_window_ids=(window_id,),
+        )
+        for window_id, window in windows.items()
+        if selected_ids is None or window_id in selected_ids
+    }
+    spectral = analyze_msst_periods(
+        periods,
+        sampling_frequency=sampling_frequency,
+        **dict(msst_options or {}),
+    )
+    comparisons = {
+        window_id: compare_stft_msst_structure(
+            item, **dict(structure_options or {})
+        )
+        for window_id, item in spectral.items()
+    }
+    for window_id, comparison in comparisons.items():
+        for representation in ("stft", "msst"):
+            for feature, value in comparison.metrics[representation].items():
+                metadata.loc[window_id, f"{representation}_{feature}"] = value
+    return metadata, comparisons
 
 
 def plot_structural_window(analysis: StructuralMSSTResult):
@@ -416,6 +577,114 @@ def plot_structural_window(analysis: StructuralMSSTResult):
     figure.update_layout(
         title="MSST morphology prototype",
         height=850,
+        template="plotly_white",
+        hovermode="closest",
+    )
+    return figure
+
+
+def plot_stft_msst_comparison(comparison: StructuralComparison):
+    """Plot nine aligned panels for direct STFT/MSST morphology inspection."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    stft_result, msst_result = comparison.stft, comparison.msst
+    spectral = msst_result.spectral
+    figure = make_subplots(
+        rows=3,
+        cols=3,
+        subplot_titles=(
+            "Signal",
+            "STFT raw",
+            "MSST raw",
+            "STFT normalized",
+            "MSST normalized",
+            "STFT coherence",
+            "MSST coherence",
+            "STFT components",
+            "MSST components",
+        ),
+        horizontal_spacing=0.06,
+        vertical_spacing=0.1,
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=spectral.period.time,
+            y=spectral.processed_signal,
+            mode="lines",
+            name="processed signal",
+        ),
+        row=1,
+        col=1,
+    )
+    heatmaps = (
+        (np.abs(stft_result.raw_representation), "Viridis", 1, 2, None),
+        (np.abs(msst_result.raw_representation), "Viridis", 1, 3, None),
+        (stft_result.normalized_msst, "Magma", 2, 1, (0.0, 12.0)),
+        (msst_result.normalized_msst, "Magma", 2, 2, (0.0, 12.0)),
+        (stft_result.coherence, "Cividis", 2, 3, (0.0, 1.0)),
+        (msst_result.coherence, "Cividis", 3, 1, (0.0, 1.0)),
+    )
+    for values, colorscale, row, column, limits in heatmaps:
+        figure.add_trace(
+            go.Heatmap(
+                x=spectral.spectral_time,
+                y=spectral.frequencies,
+                z=values,
+                colorscale=colorscale,
+                zmin=None if limits is None else limits[0],
+                zmax=None if limits is None else limits[1],
+                showscale=False,
+                hovertemplate="t=%{x:.4g}s<br>f=%{y:.4g}Hz<br>value=%{z:.4g}<extra></extra>",
+            ),
+            row=row,
+            col=column,
+        )
+    for result, column in ((stft_result, 2), (msst_result, 3)):
+        figure.add_trace(
+            go.Heatmap(
+                x=spectral.spectral_time,
+                y=spectral.frequencies,
+                z=np.abs(result.raw_representation),
+                colorscale="Greys",
+                showscale=False,
+                hoverinfo="skip",
+            ),
+            row=3,
+            col=column,
+        )
+        labels = np.where(
+            result.significant_mask, result.component_labels, np.nan
+        )
+        figure.add_trace(
+            go.Heatmap(
+                x=spectral.spectral_time,
+                y=spectral.frequencies,
+                z=labels,
+                colorscale="Rainbow",
+                opacity=0.65,
+                showscale=False,
+                hovertemplate="t=%{x:.4g}s<br>f=%{y:.4g}Hz<br>component=%{z}<extra></extra>",
+            ),
+            row=3,
+            col=column,
+        )
+    for row in range(1, 4):
+        for column in range(1, 4):
+            is_signal = (row, column) == (1, 1)
+            figure.update_xaxes(
+                title_text="time" if is_signal else "time (s)",
+                row=row,
+                col=column,
+            )
+            figure.update_yaxes(
+                title_text="signal" if is_signal else "frequency (Hz)",
+                row=row,
+                col=column,
+            )
+    figure.update_layout(
+        title="STFT versus MSST morphology",
+        height=1150,
         template="plotly_white",
         hovermode="closest",
     )

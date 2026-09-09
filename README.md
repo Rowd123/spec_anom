@@ -107,6 +107,69 @@ The six panels show the time signal, STFT, MSST, locally normalized MSST,
 structure coherence, and retained components overlaid on the MSST. Run the full
 example with `python examples/structure_usage.py`.
 
+## Controlled STFT versus MSST comparison
+
+The morphology chain is representation-independent: `extract_spectral_structure`
+selects either `abs(result.stft)` or `abs(result.msst)`, then applies the exact
+same normalization, tensor, thresholds, connected components, and aggregation.
+Use `representation="stft"` or `representation="msst"` with
+`analyze_structural_windows`. The STFT-only choice calls `analyze_stft_periods`
+and skips instantaneous-frequency estimation and synchrosqueezing entirely.
+
+For a paired experiment on identical windows, use:
+
+```python
+from spectral_anomaly import (
+    compare_structural_windows,
+    plot_stft_msst_comparison,
+)
+
+metadata, comparisons = compare_structural_windows(
+    frame,
+    value_col="value",
+    sampling_frequency=1.0,
+    sampling_period="1s",
+    window_size=256,
+    overlap=128,
+    window_ids=[0],
+    msst_options={"window_length": 128, "n_fft": 256, "hop_length": 4},
+    structure_options={"small_component_area": 16},
+)
+comparison = comparisons[0]
+print(comparison.metrics)
+plot_stft_msst_comparison(comparison).write_html(
+    "stft_msst_comparison_window_0.html"
+)
+```
+
+`comparison.stft` and `comparison.msst` each expose the raw and normalized
+representation, coherence and orientation maps, masks, labels, components, and
+features. `comparison.metrics` has `stft`, `msst`, and `msst_minus_stft` columns.
+In addition to the original features it reports median and maximum component
+area plus `small_component_fraction`, where “small” means an area no greater
+than the configurable `small_component_area`.
+
+The nine-panel diagnostic aligns signal, raw maps, normalized maps, coherence
+maps, and component overlays on the same time/frequency axes. Normalized maps
+share a 0–12 color range and coherence maps share 0–1. Raw STFT and MSST retain
+separate color scaling because their coefficient units differ after
+reassignment; forcing one raw scale would make the visual comparison misleading.
+
+Run the real-data example with:
+
+```bash
+python examples/compare_stft_msst.py --window-id 0
+```
+
+The deterministic synthetic experiment currently shows that the default
+prototype parameters retain several small MSST components even for noise, while
+STFT often retains none and does retain larger regions for the brief impulse.
+This is evidence that the fragmentation concern is measurable, not a conclusion
+that STFT is superior: the same thresholds were initially selected around MSST,
+and the weak-tone STFT is also rejected. The next experiment should compare
+background/structure distributions across recordings and calibrate thresholds
+per representation before choosing STFT, MSST, or both.
+
 ## Algorithmic choices
 
 1. Duplicates are sorted and reduced with an explicit “keep first” policy.

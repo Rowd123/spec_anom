@@ -174,6 +174,49 @@ def msst_stft(
     return transformed, coefficients, frequency_axis
 
 
+def stft_only(
+    signal: np.ndarray,
+    sampling_frequency: float,
+    *,
+    window: str | np.ndarray | None = None,
+    n_fft: int | None = None,
+    window_length: int | None = None,
+    hop_length: int = 1,
+    padtype: str = "reflect",
+    dtype: str = "float32",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute only the STFT and frequency axis, without synchrosqueezing."""
+    values = np.asarray(signal)
+    if values.ndim != 1:
+        raise ValueError("signal must be one-dimensional")
+    if len(values) < 2 or not np.all(np.isfinite(values)):
+        raise ValueError("signal must contain at least two finite samples")
+    if not np.isfinite(sampling_frequency) or sampling_frequency <= 0:
+        raise ValueError("sampling_frequency must be positive and finite")
+    if hop_length < 1:
+        raise ValueError("hop_length must be at least 1")
+
+    coefficients = stft(
+        values,
+        window=window,
+        n_fft=n_fft,
+        win_len=window_length,
+        hop_len=hop_length,
+        fs=sampling_frequency,
+        padtype=padtype,
+        modulated=True,
+        derivative=False,
+        dtype=dtype,
+    )
+    if not isinstance(coefficients, np.ndarray):
+        raise RuntimeError("this implementation requires ssqueezepy CPU/NumPy output")
+    real_dtype = np.float32 if coefficients.dtype == np.complex64 else np.float64
+    frequencies = np.linspace(
+        0.0, sampling_frequency / 2, coefficients.shape[0], dtype=real_dtype
+    )
+    return coefficients, frequencies
+
+
 def _group_suspicious_windows(result: pd.DataFrame) -> list[list[int]]:
     """Group suspicious windows whose half-open grid intervals touch or overlap."""
     required = {"suspicious", "accepted", "grid_start", "grid_stop"}
@@ -377,6 +420,38 @@ def analyze_msst_periods(
             period=period,
             processed_signal=processed,
             msst=transformed,
+            stft=coefficients,
+            frequencies=frequencies,
+            spectral_time=spectral_time,
+        )
+    return analyses
+
+
+def analyze_stft_periods(
+    periods: Mapping[int, AnalysisPeriod],
+    *,
+    sampling_frequency: float,
+    center: bool = True,
+    **stft_options: object,
+) -> dict[int, MSSTResult]:
+    """Run STFT only on periods, without computing a reassignment map or MSST.
+
+    ``MSSTResult.msst`` is an empty array for these results. The shared result
+    container preserves compatibility with plotting and morphology code while
+    making accidental use of a nonexistent MSST immediately visible.
+    """
+    analyses: dict[int, MSSTResult] = {}
+    for period_id, period in periods.items():
+        processed = period.signal - np.mean(period.signal) if center else period.signal.copy()
+        coefficients, frequencies = stft_only(
+            processed, sampling_frequency, **stft_options
+        )
+        hop_length = int(stft_options.get("hop_length", 1))
+        spectral_time = np.arange(coefficients.shape[1]) * hop_length / sampling_frequency
+        analyses[period_id] = MSSTResult(
+            period=period,
+            processed_signal=processed,
+            msst=np.empty((0, 0), dtype=coefficients.dtype),
             stft=coefficients,
             frequencies=frequencies,
             spectral_time=spectral_time,
