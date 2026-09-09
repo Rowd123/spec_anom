@@ -158,7 +158,9 @@ def test_numeric_time_index_and_parameter_validation():
 
 
 def test_off_grid_timestamp_is_not_silently_snapped():
-    idx = pd.to_datetime(["2025-01-01 00:00:00", "2025-01-01 00:00:01.1"])
+    idx = pd.to_datetime(
+        ["2025-01-01 00:00:00", "2025-01-01 00:00:01.1"], format="mixed"
+    )
     with pytest.raises(ValueError, match="not exactly aligned"):
         detect(frame([1.0, 2.0], index=idx), sampling_period="1s")
 
