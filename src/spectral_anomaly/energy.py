@@ -198,6 +198,97 @@ def _compute_robust_score(energy: float, history: list[float]) -> tuple[float, f
     return baseline, mad, scale, float((energy - baseline) / scale)
 
 
+def prepare_analysis_windows(
+    data: pd.DataFrame,
+    *,
+    value_col: Hashable,
+    quality_col: Hashable | None = None,
+    valid_quality_flags: Iterable[object] | None = None,
+    sampling_period: pd.Timedelta | str | Real | None = None,
+    window_size: int = 256,
+    window_name: str | tuple = "hann",
+    overlap: int = 0,
+    min_valid_ratio: float = 0.9,
+    min_valid_samples: int | None = None,
+    max_interpolation_gap: int = 3,
+) -> tuple[pd.DataFrame, dict[int, WindowData]]:
+    """Prepare every quality-valid window without making an anomaly decision.
+
+    This is the quality-control boundary shared by downstream detectors. In
+    particular, acceptance depends only on observations and interpolation—not
+    on energy—so every returned window is eligible for MSST analysis.
+    """
+    _validate_parameters(
+        window_size,
+        overlap,
+        min_valid_ratio,
+        min_valid_samples,
+        max_interpolation_gap,
+        history_size=1,
+        min_history=1,
+        k=0.0,
+    )
+    prepared = _prepare_dataframe(data, value_col, quality_col, valid_quality_flags)
+    regular, _ = _regularize_signal(prepared, sampling_period)
+    raw = regular["__signal"].to_numpy(dtype=float)
+    observed = regular["__observed"].to_numpy(dtype=bool)
+    filled, interpolated = _interpolate_small_gaps(raw, max_interpolation_gap)
+    taper = np.asarray(get_window(window_name, window_size, fftbins=False), dtype=float)
+    if not np.any(taper) or np.dot(taper, taper) == 0:
+        raise ValueError("Fourier window must have non-zero energy")
+
+    rows: list[dict[str, object]] = []
+    windows: dict[int, WindowData] = {}
+    step = window_size - overlap
+    required = min_valid_samples or 0
+    for window_id, start in enumerate(range(0, len(regular) - window_size + 1, step)):
+        stop = start + window_size
+        obs = observed[start:stop]
+        interp = interpolated[start:stop]
+        signal = filled[start:stop]
+        valid_count = int(obs.sum())
+        ratio = valid_count / window_size
+        longest = _longest_missing_run(obs)
+        reasons: list[str] = []
+        if ratio < min_valid_ratio:
+            reasons.append("insufficient_valid_ratio")
+        if valid_count < required:
+            reasons.append("insufficient_valid_samples")
+        if longest > max_interpolation_gap:
+            reasons.append("gap_too_long")
+        if np.isnan(signal).any():
+            reasons.append("unfilled_missing_values")
+        accepted = not reasons
+        if accepted:
+            centered = signal - np.mean(signal)
+            windows[window_id] = WindowData(
+                time=regular.index[start:stop].copy(),
+                signal=signal.copy(),
+                centered=centered,
+                windowed=signal * taper,
+                observed_mask=obs.copy(),
+                interpolated_mask=interp.copy(),
+            )
+        rows.append(
+            {
+                "start_time": regular.index[start],
+                "end_time": regular.index[stop - 1],
+                "grid_start": start,
+                "grid_stop": stop,
+                "expected_samples": window_size,
+                "observed_samples": valid_count,
+                "interpolated_samples": int(interp.sum()),
+                "valid_ratio": ratio,
+                "longest_missing_run": longest,
+                "accepted": accepted,
+                "rejection_reason": ";".join(reasons) if reasons else None,
+            }
+        )
+    result = pd.DataFrame(rows)
+    result.index = pd.RangeIndex(len(result), name="window_id")
+    return result, windows
+
+
 def detect_energy_anomalies(
     data: pd.DataFrame,
     *,
