@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from numbers import Real
+from os import PathLike
+from typing import Hashable, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
 from numba import njit, prange
 from ssqueezepy import phase_stft, stft
 
-from .energy import WindowData
+from .energy import (
+    WindowData,
+    _interpolate_small_gaps,
+    _prepare_dataframe,
+    _regularize_signal,
+)
 
 
 @dataclass(frozen=True)
@@ -399,6 +406,66 @@ def analyze_msst_monitoring_period(
         center=center,
         **msst_options,
     )[0]
+
+
+def analyze_msst_monitoring_data(
+    data: pd.DataFrame,
+    *,
+    value_col: Hashable,
+    sampling_frequency: float,
+    output_html: str | PathLike[str],
+    quality_col: Hashable | None = None,
+    valid_quality_flags: Iterable[object] | None = None,
+    sampling_period: pd.Timedelta | str | Real | None = None,
+    max_interpolation_gap: int = 3,
+    iteration_count: int = 3,
+    center: bool = True,
+    **msst_options: object,
+) -> tuple[MSSTResult, object]:
+    """Preprocess raw monitoring data, run one full MSST, and save its plot.
+
+    Duplicate timestamps, quality flags, regular-grid construction, and bounded
+    interpolation follow the same rules as the energy detector. The whole
+    regularized input interval is transformed, including a final partial energy
+    window that would otherwise be absent from energy-detection results.
+
+    Returns the numerical :class:`MSSTResult` and the Plotly figure after writing
+    that figure to ``output_html`` as a self-contained HTML document.
+    """
+    if max_interpolation_gap < 0:
+        raise ValueError("max_interpolation_gap must be non-negative")
+    prepared = _prepare_dataframe(
+        data, value_col, quality_col, valid_quality_flags
+    )
+    regular, _ = _regularize_signal(prepared, sampling_period)
+    signal, interpolated = _interpolate_small_gaps(
+        regular["__signal"].to_numpy(dtype=float), max_interpolation_gap
+    )
+    if not np.all(np.isfinite(signal)):
+        raise ValueError(
+            "the complete monitoring period contains missing data that cannot "
+            "be interpolated with max_interpolation_gap"
+        )
+
+    observed = regular["__observed"].to_numpy(dtype=bool)
+    period = AnalysisPeriod(
+        time=regular.index.copy(),
+        signal=signal,
+        observed_mask=observed,
+        interpolated_mask=interpolated,
+        anomaly_mask=np.zeros(len(signal), dtype=bool),
+        source_window_ids=(),
+    )
+    analysis = analyze_msst_periods(
+        {0: period},
+        sampling_frequency=sampling_frequency,
+        iteration_count=iteration_count,
+        center=center,
+        **msst_options,
+    )[0]
+    figure = plot_msst_periods({0: analysis})
+    figure.write_html(output_html, include_plotlyjs=True, full_html=True)
+    return analysis, figure
 
 
 def plot_msst_periods(
