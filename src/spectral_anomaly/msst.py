@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from numbers import Real
+from os import PathLike
+from typing import Hashable, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
 from numba import njit, prange
 from ssqueezepy import phase_stft, stft
 
-from .energy import WindowData
+from .energy import (
+    WindowData,
+    _interpolate_small_gaps,
+    _prepare_dataframe,
+    _regularize_signal,
+)
 
 
 @dataclass(frozen=True)
@@ -167,6 +174,49 @@ def msst_stft(
     return transformed, coefficients, frequency_axis
 
 
+def stft_only(
+    signal: np.ndarray,
+    sampling_frequency: float,
+    *,
+    window: str | np.ndarray | None = None,
+    n_fft: int | None = None,
+    window_length: int | None = None,
+    hop_length: int = 1,
+    padtype: str = "reflect",
+    dtype: str = "float32",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute only the STFT and frequency axis, without synchrosqueezing."""
+    values = np.asarray(signal)
+    if values.ndim != 1:
+        raise ValueError("signal must be one-dimensional")
+    if len(values) < 2 or not np.all(np.isfinite(values)):
+        raise ValueError("signal must contain at least two finite samples")
+    if not np.isfinite(sampling_frequency) or sampling_frequency <= 0:
+        raise ValueError("sampling_frequency must be positive and finite")
+    if hop_length < 1:
+        raise ValueError("hop_length must be at least 1")
+
+    coefficients = stft(
+        values,
+        window=window,
+        n_fft=n_fft,
+        win_len=window_length,
+        hop_len=hop_length,
+        fs=sampling_frequency,
+        padtype=padtype,
+        modulated=True,
+        derivative=False,
+        dtype=dtype,
+    )
+    if not isinstance(coefficients, np.ndarray):
+        raise RuntimeError("this implementation requires ssqueezepy CPU/NumPy output")
+    real_dtype = np.float32 if coefficients.dtype == np.complex64 else np.float64
+    frequencies = np.linspace(
+        0.0, sampling_frequency / 2, coefficients.shape[0], dtype=real_dtype
+    )
+    return coefficients, frequencies
+
+
 def _group_suspicious_windows(result: pd.DataFrame) -> list[list[int]]:
     """Group suspicious windows whose half-open grid intervals touch or overlap."""
     required = {"suspicious", "accepted", "grid_start", "grid_stop"}
@@ -289,6 +339,63 @@ def prepare_analysis_periods(
     return metadata, periods
 
 
+def prepare_monitoring_period(
+    result: pd.DataFrame,
+    windows: Mapping[int, WindowData],
+) -> AnalysisPeriod:
+    """Build one continuous period spanning the complete monitoring window.
+
+    The bounds are taken from the first ``grid_start`` and the last
+    ``grid_stop`` in the energy-detection result. Overlapping accepted windows
+    are de-duplicated on that global grid. Since an MSST cannot contain missing
+    values, a descriptive error is raised if rejected windows leave any sample
+    in the monitoring interval uncovered.
+    """
+    required = {"suspicious", "accepted", "grid_start", "grid_stop"}
+    missing = required.difference(result.columns)
+    if missing:
+        raise ValueError(f"result is missing columns: {sorted(missing)}")
+    if result.empty:
+        raise ValueError("result must contain at least one monitoring window")
+
+    starts = pd.to_numeric(result["grid_start"], errors="raise").astype(int)
+    stops = pd.to_numeric(result["grid_stop"], errors="raise").astype(int)
+    monitoring_start = int(starts.min())
+    monitoring_stop = int(stops.max())
+    if monitoring_stop - monitoring_start < 2:
+        raise ValueError("the monitoring period must contain at least two samples")
+
+    samples = _index_accepted_samples(result, windows)
+    missing_positions = [
+        position
+        for position in range(monitoring_start, monitoring_stop)
+        if position not in samples
+    ]
+    if missing_positions:
+        raise ValueError(
+            "the complete monitoring period is not covered by accepted data; "
+            f"missing grid positions include {missing_positions[:3]}"
+        )
+
+    positions = np.arange(monitoring_start, monitoring_stop)
+    selected = [samples[int(position)] for position in positions]
+    anomaly_mask = np.zeros(len(positions), dtype=bool)
+    suspicious = result[result["suspicious"].fillna(False).astype(bool)]
+    for _, row in suspicious.iterrows():
+        start = max(int(row["grid_start"]), monitoring_start) - monitoring_start
+        stop = min(int(row["grid_stop"]), monitoring_stop) - monitoring_start
+        anomaly_mask[start:stop] = True
+
+    return AnalysisPeriod(
+        time=pd.Index([item[0] for item in selected]),
+        signal=np.asarray([item[1] for item in selected]),
+        observed_mask=np.asarray([item[2] for item in selected], dtype=bool),
+        interpolated_mask=np.asarray([item[3] for item in selected], dtype=bool),
+        anomaly_mask=anomaly_mask,
+        source_window_ids=tuple(int(window_id) for window_id in result.index),
+    )
+
+
 def analyze_msst_periods(
     periods: Mapping[int, AnalysisPeriod],
     *,
@@ -319,6 +426,121 @@ def analyze_msst_periods(
         )
     return analyses
 
+
+def analyze_stft_periods(
+    periods: Mapping[int, AnalysisPeriod],
+    *,
+    sampling_frequency: float,
+    center: bool = True,
+    **stft_options: object,
+) -> dict[int, MSSTResult]:
+    """Run STFT only on periods, without computing a reassignment map or MSST.
+
+    ``MSSTResult.msst`` is an empty array for these results. The shared result
+    container preserves compatibility with plotting and morphology code while
+    making accidental use of a nonexistent MSST immediately visible.
+    """
+    analyses: dict[int, MSSTResult] = {}
+    for period_id, period in periods.items():
+        processed = period.signal - np.mean(period.signal) if center else period.signal.copy()
+        coefficients, frequencies = stft_only(
+            processed, sampling_frequency, **stft_options
+        )
+        hop_length = int(stft_options.get("hop_length", 1))
+        spectral_time = np.arange(coefficients.shape[1]) * hop_length / sampling_frequency
+        analyses[period_id] = MSSTResult(
+            period=period,
+            processed_signal=processed,
+            msst=np.empty((0, 0), dtype=coefficients.dtype),
+            stft=coefficients,
+            frequencies=frequencies,
+            spectral_time=spectral_time,
+        )
+    return analyses
+
+
+def analyze_msst_monitoring_period(
+    result: pd.DataFrame,
+    windows: Mapping[int, WindowData],
+    *,
+    sampling_frequency: float,
+    iteration_count: int = 3,
+    center: bool = True,
+    **msst_options: object,
+) -> MSSTResult:
+    """Compute one MSST over the complete energy-monitoring period.
+
+    Unlike :func:`analyze_msst_periods`, this function does not select or extend
+    anomaly groups: it preserves the full time extent represented by ``result``.
+    """
+    period = prepare_monitoring_period(result, windows)
+    return analyze_msst_periods(
+        {0: period},
+        sampling_frequency=sampling_frequency,
+        iteration_count=iteration_count,
+        center=center,
+        **msst_options,
+    )[0]
+
+
+def analyze_msst_monitoring_data(
+    data: pd.DataFrame,
+    *,
+    value_col: Hashable,
+    sampling_frequency: float,
+    output_html: str | PathLike[str],
+    quality_col: Hashable | None = None,
+    valid_quality_flags: Iterable[object] | None = None,
+    sampling_period: pd.Timedelta | str | Real | None = None,
+    max_interpolation_gap: int = 3,
+    iteration_count: int = 3,
+    center: bool = True,
+    **msst_options: object,
+) -> tuple[MSSTResult, object]:
+    """Preprocess raw monitoring data, run one full MSST, and save its plot.
+
+    Duplicate timestamps, quality flags, regular-grid construction, and bounded
+    interpolation follow the same rules as the energy detector. The whole
+    regularized input interval is transformed, including a final partial energy
+    window that would otherwise be absent from energy-detection results.
+
+    Returns the numerical :class:`MSSTResult` and the Plotly figure after writing
+    that figure to ``output_html`` as a self-contained HTML document.
+    """
+    if max_interpolation_gap < 0:
+        raise ValueError("max_interpolation_gap must be non-negative")
+    prepared = _prepare_dataframe(
+        data, value_col, quality_col, valid_quality_flags
+    )
+    regular, _ = _regularize_signal(prepared, sampling_period)
+    signal, interpolated = _interpolate_small_gaps(
+        regular["__signal"].to_numpy(dtype=float), max_interpolation_gap
+    )
+    if not np.all(np.isfinite(signal)):
+        raise ValueError(
+            "the complete monitoring period contains missing data that cannot "
+            "be interpolated with max_interpolation_gap"
+        )
+
+    observed = regular["__observed"].to_numpy(dtype=bool)
+    period = AnalysisPeriod(
+        time=regular.index.copy(),
+        signal=signal,
+        observed_mask=observed,
+        interpolated_mask=interpolated,
+        anomaly_mask=np.zeros(len(signal), dtype=bool),
+        source_window_ids=(),
+    )
+    analysis = analyze_msst_periods(
+        {0: period},
+        sampling_frequency=sampling_frequency,
+        iteration_count=iteration_count,
+        center=center,
+        **msst_options,
+    )[0]
+    figure = plot_msst_periods({0: analysis})
+    figure.write_html(output_html, include_plotlyjs=True, full_html=True)
+    return analysis, figure
 
 
 def plot_msst_periods(
