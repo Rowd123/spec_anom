@@ -4,9 +4,12 @@ import pytest
 
 from spectral_anomaly import (
     WindowData,
+    analyze_msst_monitoring_data,
+    analyze_msst_monitoring_period,
     analyze_msst_periods,
     plot_msst_periods,
     prepare_analysis_periods,
+    prepare_monitoring_period,
 )
 from spectral_anomaly import msst as msst_module
 
@@ -98,3 +101,73 @@ def test_analysis_centers_period_and_forwards_msst_options(monkeypatch):
         "Period 0 — STFT",
         "Period 0 — MSST",
     ]
+
+
+def test_prepare_monitoring_period_covers_the_whole_detection_grid():
+    result, windows = make_detection_result()
+
+    period = prepare_monitoring_period(result, windows)
+
+    assert np.array_equal(period.signal, np.arange(12.0))
+    assert period.source_window_ids == (0, 1, 2, 3, 4)
+    assert np.array_equal(
+        period.anomaly_mask, [False, False] + [True] * 6 + [False] * 4
+    )
+
+
+def test_prepare_monitoring_period_rejects_uncovered_data():
+    result, windows = make_detection_result()
+    del windows[2]
+    del windows[3]
+
+    with pytest.raises(ValueError, match="not covered by accepted data"):
+        prepare_monitoring_period(result, windows)
+
+
+def test_monitoring_period_analysis_returns_one_full_transformation(monkeypatch):
+    result, windows = make_detection_result()
+
+    def fake_msst(signal, sampling_frequency, iteration_count, **options):
+        coefficients = np.ones((3, len(signal)), dtype=np.complex64)
+        return 2 * coefficients, coefficients, np.array([0.0, 0.5, 1.0])
+
+    monkeypatch.setattr(msst_module, "msst_stft", fake_msst)
+    analysis = analyze_msst_monitoring_period(
+        result, windows, sampling_frequency=2.0, center=False
+    )
+
+    assert np.array_equal(analysis.processed_signal, np.arange(12.0))
+    assert analysis.msst.shape == (3, 12)
+    assert analysis.spectral_time[-1] == pytest.approx(5.5)
+
+
+def test_monitoring_data_pipeline_preprocesses_transforms_and_saves_html(
+    monkeypatch, tmp_path
+):
+    data = pd.DataFrame(
+        {"value": [1.0, np.nan, 3.0, 4.0]},
+        index=pd.Index([0.0, 1.0, 2.0, 3.0]),
+    )
+
+    def fake_msst(signal, sampling_frequency, iteration_count, **options):
+        assert np.array_equal(signal, [-1.5, -0.5, 0.5, 1.5])
+        coefficients = np.ones((3, len(signal)), dtype=np.complex64)
+        return 2 * coefficients, coefficients, np.array([0.0, 0.5, 1.0])
+
+    monkeypatch.setattr(msst_module, "msst_stft", fake_msst)
+    output = tmp_path / "full-monitoring-msst.html"
+
+    analysis, figure = analyze_msst_monitoring_data(
+        data,
+        value_col="value",
+        sampling_frequency=2.0,
+        sampling_period=1.0,
+        max_interpolation_gap=1,
+        output_html=output,
+    )
+
+    assert np.array_equal(analysis.period.signal, [1.0, 2.0, 3.0, 4.0])
+    assert np.array_equal(analysis.period.interpolated_mask, [False, True, False, False])
+    assert analysis.msst.shape == (3, 4)
+    assert len(figure.data) == 4
+    assert output.read_text().startswith("<!doctype html>")
