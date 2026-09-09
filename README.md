@@ -118,6 +118,33 @@ the extent covered by the original consecutive anomalous windows. This stage onl
 computes and plots representations; it does not yet confirm anomalies or extract
 clustering features.
 
+To obtain a single transformation over the **entire monitoring period**, use
+`analyze_msst_monitoring_period`. It de-duplicates overlapping energy windows,
+keeps their complete global time range, and marks anomalous samples in the
+returned `MSSTResult.period.anomaly_mask`:
+
+```python
+from spectral_anomaly import analyze_msst_monitoring_period
+
+full_analysis = analyze_msst_monitoring_period(
+    result,
+    windows,
+    sampling_frequency=1.0,
+    iteration_count=3,
+    window="hann",
+    n_fft=256,
+    window_length=128,
+    hop_length=4,
+)
+full_period_msst = full_analysis.msst
+```
+
+The complete interval must be covered by accepted windows because MSST requires
+a finite, regularly sampled signal. The function reports uncovered grid
+positions instead of silently shortening the surveillance period. Use
+`prepare_monitoring_period(result, windows)` separately when only the assembled
+time-domain period and its masks are needed.
+
 Run the complete example with:
 
 ```bash
