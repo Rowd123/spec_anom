@@ -118,6 +118,42 @@ the extent covered by the original consecutive anomalous windows. This stage onl
 computes and plots representations; it does not yet confirm anomalies or extract
 clustering features.
 
+To preprocess raw data, obtain a single transformation over the **entire
+monitoring period**, and save its interactive visualization in one call, use
+`analyze_msst_monitoring_data`:
+
+```python
+from spectral_anomaly import analyze_msst_monitoring_data
+
+full_analysis, figure = analyze_msst_monitoring_data(
+    frame,
+    value_col="value",
+    quality_col="quality",
+    valid_quality_flags={"good"},
+    sampling_period="1s",
+    sampling_frequency=1.0,
+    max_interpolation_gap=3,
+    iteration_count=3,
+    window="hann",
+    n_fft=256,
+    window_length=128,
+    hop_length=4,
+    output_html="msst_full_monitoring_period.html",
+)
+full_period_msst = full_analysis.msst
+```
+
+The function applies the detector's timestamp de-duplication, quality masking,
+regular-grid construction, and bounded interpolation rules before passing the
+complete sequence to MSST. It returns both the numerical `MSSTResult` and the
+Plotly figure, and writes a self-contained HTML file to `output_html`. Since MSST
+requires a finite signal, the function explicitly rejects a monitoring period
+containing a missing run longer than `max_interpolation_gap`.
+
+When preprocessing and energy detection have already been run, the lower-level
+`analyze_msst_monitoring_period(result, windows, ...)` remains available for
+assembling overlapping accepted windows without processing the raw frame again.
+
 Run the complete example with:
 
 ```bash
