@@ -1,7 +1,111 @@
-# Spectral anomaly — energy pre-filter
+# Spectral anomaly — energy and MSST morphology
 
-This package implements the inexpensive first stage of an anomaly pipeline. It
-does **not** implement MSST or clustering.
+This package provides quality-aware signal windowing, the historical causal
+energy detector, STFT/MSST transforms, and a first morphology prototype. Energy
+scoring remains available but is no longer required to select windows for the
+structural MSST path. Classification and clustering are intentionally out of
+scope for the prototype.
+
+## Pipeline architecture and energy dependency
+
+The historical path is:
+
+```text
+raw data -> quality preparation -> window energy -> causal median/MAD score
+         -> suspicious windows -> joined fixed periods -> MSST
+```
+
+`detect_energy_anomalies` currently owns both quality preparation and energy
+scoring. Its `suspicious` column is consumed by `prepare_analysis_periods`, so
+that older MSST path is explicitly gated by energy. `analyze_msst_periods` and
+`msst_stft` themselves do not depend on energy: they only require complete
+regularly sampled arrays.
+
+The morphology prototype adds a parallel, non-breaking path:
+
+```text
+raw data
+  -> prepare_analysis_windows (quality only)
+  -> MSST for every accepted window
+  -> local robust normalization
+  -> structure tensor
+  -> significant connected components
+  -> descriptive window/component features
+  -> later: detection decision and unsupervised classification
+```
+
+Window acceptance in this path depends only on NaNs, quality flags, valid-sample
+requirements, and interpolation-gap limits. Neither energy nor the historical
+`suspicious` flag decides whether MSST is run.
+
+### Prototype feature rationale
+
+The deliberately small first feature set is intended for visual validation, not
+as a final anomaly score:
+
+| Feature | Geometric meaning | Expected noise/structure behavior |
+|---|---|---|
+| `weighted_mean_coherence` | Tensor anisotropy averaged with local significance weights | Lower for diffuse isotropic texture; higher along locally organized shapes |
+| `coherence_q90` | Upper tail of coherence among locally significant pixels | Shows whether at least part of the map is strongly organized |
+| `coherent_pixel_fraction` | Map fraction retained by both significance and coherence criteria | Small isolated noise responses contribute little; persistent shapes occupy more support |
+| `orientation_dispersion` | Axial circular dispersion, invariant under a 180° reversal | Low for a regular local direction, higher for random directions; orientation itself is not scored as good or bad |
+| `component_count` | Number of connected significant coherent regions | Separates absent/fragmented support from one or more organized objects |
+| `largest_component_area_fraction` | Relative support of the largest object | Rewards spatial persistence without using absolute MSST amplitude |
+| `largest_component_significance_fraction` | Share of local significance carried by the largest object | Measures concentration relative to the locally estimated background |
+
+Every component also reports pixel area, integrated local significance, duration
+in seconds, bandwidth in hertz, bounding box, dimensionless normalized aspect
+ratio, PCA orientation, and PCA linearity. Duration and bandwidth are kept in
+their own physical units; PCA coordinates are normalized by the complete map
+extent before axes are combined.
+
+### Important prototype parameters
+
+The parameters most likely to require calibration are the frequency/time size of
+`normalization_neighborhood`, tensor smoothing scales `tensor_sigma`, local
+`significance_threshold`, `coherence_threshold`, and
+`minimum_component_area`. They interact with STFT `window_length`, `hop_length`,
+frequency resolution, window duration, and expected structure thickness. The
+normalization neighborhood must be wider than a typical structure but smaller
+than background variation. Tensor smoothing must suppress pixel noise without
+merging nearby shapes. Thresholds should eventually be calibrated on background
+recordings rather than interpreted as a universal classifier.
+
+The normalization is a running 2-D median/MAD of `abs(MSST)` and therefore does
+not assume a single global noise level or white stationary noise. The structure
+tensor is evaluated in dimensionless local scale coordinates, making its
+coherence orientation-neutral. Connected components use 8-connectivity and do
+not assume a single-valued ridge `f(t)`, so vertical and multi-frequency shapes
+remain representable. Skeleton, curvature, loops, branch counts, HDBSCAN, and a
+final decision rule are intentionally deferred until these maps and basic
+features have been validated visually.
+
+### Structural prototype usage
+
+```python
+from spectral_anomaly import analyze_structural_windows, plot_structural_window
+
+metadata, analyses = analyze_structural_windows(
+    frame,
+    value_col="value",
+    sampling_frequency=1.0,
+    sampling_period="1s",
+    window_size=256,
+    overlap=128,
+    msst_options={"window_length": 128, "n_fft": 256, "hop_length": 4},
+)
+
+# All quality-valid windows are present, regardless of their energy score.
+window_id = next(iter(analyses))
+item = analyses[window_id]
+print(item.features)
+print(item.components)
+plot_structural_window(item).write_html("msst_structure_window.html")
+```
+
+The six panels show the time signal, STFT, MSST, locally normalized MSST,
+structure coherence, and retained components overlaid on the MSST. Run the full
+example with `python examples/structure_usage.py`.
 
 ## Algorithmic choices
 
