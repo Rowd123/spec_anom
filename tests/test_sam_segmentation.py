@@ -12,6 +12,7 @@ from spectral_anomaly import (
     spectrogram_to_sam_image,
     time_frequency_to_pixel,
     validate_automatic_mask_options,
+    validate_spectral_representation,
 )
 
 
@@ -41,6 +42,48 @@ def test_spectrogram_conversion_is_rgb_uint8_without_colormap():
 def test_constant_spectrogram_is_well_defined():
     image = spectrogram_to_sam_image(np.ones((3, 4)))
     assert not image.any()
+
+
+@pytest.mark.parametrize("transform", ["linear", "log"])
+def test_spectral_map_transforms_support_complex_input_without_mutation(transform):
+    spectral_map = np.array([[0, 1 + 2j, 4], [2j, 8, 32]], dtype=complex)
+    original = spectral_map.copy()
+
+    image = spectrogram_to_sam_image(
+        spectral_map, transform=transform, percentiles=(0.0, 100.0)
+    )
+
+    assert image.dtype == np.uint8
+    assert image.shape == (2, 3, 3)
+    np.testing.assert_array_equal(image[..., 0], image[..., 1])
+    np.testing.assert_array_equal(image[..., 1], image[..., 2])
+    np.testing.assert_array_equal(spectral_map, original)
+
+
+def test_linear_and_log_transforms_produce_different_images():
+    spectral_map = np.array([[0.0, 1.0, 2.0], [4.0, 16.0, 64.0]])
+    linear = spectrogram_to_sam_image(
+        spectral_map, transform="linear", percentiles=(0.0, 100.0)
+    )
+    logarithmic = spectrogram_to_sam_image(
+        spectral_map, transform="log", percentiles=(0.0, 100.0)
+    )
+    assert not np.array_equal(linear, logarithmic)
+
+
+def test_invalid_image_transform_is_rejected():
+    with pytest.raises(ValueError, match="transform must be"):
+        spectrogram_to_sam_image(np.ones((2, 2)), transform="sqrt")
+
+
+@pytest.mark.parametrize("representation", ["stft", "msst"])
+def test_spectral_representation_validation_accepts_supported_values(representation):
+    assert validate_spectral_representation(representation) == representation
+
+
+def test_spectral_representation_validation_rejects_unknown_value():
+    with pytest.raises(ValueError, match="representation must be"):
+        validate_spectral_representation("cwt")
 
 
 @pytest.mark.parametrize("bad", [np.ones(4), np.array([[np.nan]])])
@@ -181,3 +224,4 @@ def test_automatic_mask_plot_uses_a_table_compatible_subplot():
     assert figure.data[-1].type == "table"
     assert figure.data[-1].header.values[0] == "segment_id"
     assert figure.layout.annotations[0].text.startswith("MSST originale")
+    assert "Image transform: log" in figure.layout.title.text

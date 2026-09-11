@@ -35,6 +35,7 @@ from .sam_segmentation import (
     spectrogram_to_sam_image,
     time_frequency_to_pixel,
     validate_automatic_mask_options,
+    validate_spectral_representation,
 )
 from .structure import (
     COMPONENT_FEATURE_COLUMNS,
@@ -104,6 +105,7 @@ __all__ = [
     "spectrogram_to_sam_image",
     "time_frequency_to_pixel",
     "validate_automatic_mask_options",
+    "validate_spectral_representation",
     "SpectralComponent",
     "StructuralComparison",
     "StructuralMSSTResult",

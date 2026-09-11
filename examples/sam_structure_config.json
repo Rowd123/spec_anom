@@ -1,4 +1,5 @@
 {
+  "representation": "msst",
   "analysis": {
     "sampling_frequency": 1.0,
     "sampling_period": "1s",
@@ -16,6 +17,10 @@
     "n_fft": 256,
     "window_length": 128,
     "hop_length": 4
+  },
+  "sam_image": {
+    "transform": "log",
+    "percentiles": [1.0, 99.0]
   },
   "sam": {
     "checkpoint": "checkpoints/sam2.1_hiera_small.pt",
