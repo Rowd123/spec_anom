@@ -8,6 +8,7 @@ from spectral_anomaly import (
     compute_dice,
     compute_iou,
     pixel_to_time_frequency,
+    plot_sam_automatic_masks,
     spectrogram_to_sam_image,
     time_frequency_to_pixel,
     validate_automatic_mask_options,
@@ -160,3 +161,21 @@ def test_automatic_segments_are_sorted_by_area_and_renumbered():
 def test_automatic_mask_parameter_validation(options, message):
     with pytest.raises(ValueError, match=message):
         validate_automatic_mask_options(options)
+
+
+def test_automatic_mask_plot_uses_a_table_compatible_subplot():
+    image = np.zeros((4, 5, 3), dtype=np.uint8)
+    segment = SAMAutomaticMaskSegmenter(
+        generator=FakeAutomaticGenerator()
+    ).generate_masks(image)[0]
+
+    figure = plot_sam_automatic_masks(
+        np.zeros((4, 5), dtype=complex),
+        image,
+        [segment],
+        np.arange(5),
+        np.arange(4),
+    )
+
+    assert figure.data[-1].type == "table"
+    assert figure.data[-1].header.values[0] == "segment_id"

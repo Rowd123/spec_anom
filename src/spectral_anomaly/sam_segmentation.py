@@ -453,7 +453,7 @@ def plot_sam_automatic_masks(
     common = {"x": spectral_time, "y": frequencies, "showscale": False}
     figure = make_subplots(
         rows=2, cols=3,
-        specs=[[{}, {}, {}], [{}, {"colspan": 2}, None]],
+        specs=[[{}, {}, {}], [{}, {"type": "table", "colspan": 2}, None]],
         subplot_titles=("STFT originale (log1p magnitude)", "Image exacte donnée à SAM",
                         f"Tous les masques ({len(segments)})", "Overlay des masques", "Résumé des segments"),
     )
