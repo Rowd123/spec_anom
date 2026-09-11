@@ -20,12 +20,15 @@
     "model_config": "configs/sam2.1/sam2.1_hiera_s.yaml",
     "device": "auto"
   },
-  "prompt": {
-    "type": "point",
-    "coordinates": [120.0, 0.15]
+  "automatic_mask_generation": {
+    "points_per_side": 32,
+    "points_per_batch": 64,
+    "pred_iou_thresh": 0.8,
+    "stability_score_thresh": 0.8,
+    "min_mask_region_area": 0
   },
   "output": {
-    "html": "sam_structure.html",
+    "html": "sam_automatic_masks.html",
     "show": false
   }
 }
