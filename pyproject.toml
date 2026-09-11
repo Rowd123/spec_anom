@@ -18,6 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+# SAM 2 itself is installed from Meta's repository; this extra documents the
+# local PyTorch prerequisite without making the experiment mandatory.
+sam = ["torch>=2.5"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -20,6 +20,17 @@ from .msst import (
     prepare_monitoring_period,
     stft_only,
 )
+from .sam_segmentation import (
+    SAM2_INSTALL_HINT,
+    SAMSegmentationResult,
+    SAMStructureSegmenter,
+    compute_dice,
+    compute_iou,
+    pixel_to_time_frequency,
+    plot_sam_segmentation,
+    spectrogram_to_sam_image,
+    time_frequency_to_pixel,
+)
 from .structure import (
     COMPONENT_FEATURE_COLUMNS,
     DEFAULT_LOG1P_FEATURES,
@@ -74,6 +85,15 @@ __all__ = [
     "prepare_analysis_periods",
     "prepare_monitoring_period",
     "stft_only",
+    "SAM2_INSTALL_HINT",
+    "SAMSegmentationResult",
+    "SAMStructureSegmenter",
+    "compute_dice",
+    "compute_iou",
+    "pixel_to_time_frequency",
+    "plot_sam_segmentation",
+    "spectrogram_to_sam_image",
+    "time_frequency_to_pixel",
     "SpectralComponent",
     "StructuralComparison",
     "StructuralMSSTResult",
