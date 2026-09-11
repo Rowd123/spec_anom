@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from os import PathLike
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -19,6 +19,111 @@ SAM2_INSTALL_HINT = (
     "`pip install 'git+https://github.com/facebookresearch/sam2.git'` and install "
     "a PyTorch build appropriate for your CPU or CUDA environment."
 )
+
+
+AUTOMATIC_MASK_DEFAULTS: dict[str, object] = {
+    "points_per_side": 32,
+    "points_per_batch": 64,
+    "pred_iou_thresh": 0.8,
+    "stability_score_thresh": 0.8,
+    "stability_score_offset": 1.0,
+    "box_nms_thresh": 0.7,
+    "crop_n_layers": 0,
+    "crop_nms_thresh": 0.7,
+    "crop_overlap_ratio": 512 / 1500,
+    "crop_n_points_downscale_factor": 1,
+    "min_mask_region_area": 0,
+    "use_m2m": False,
+}
+
+
+def validate_automatic_mask_options(options: Mapping[str, object]) -> dict[str, object]:
+    """Validate options accepted by Meta's ``SAM2AutomaticMaskGenerator``."""
+    unknown = set(options) - set(AUTOMATIC_MASK_DEFAULTS)
+    if unknown:
+        raise ValueError(f"unknown automatic mask option(s): {sorted(unknown)}")
+    result = {**AUTOMATIC_MASK_DEFAULTS, **options}
+    for name in ("points_per_side", "points_per_batch"):
+        value = result[name]
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+    for name in ("crop_n_layers", "min_mask_region_area"):
+        value = result[name]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+    value = result["crop_n_points_downscale_factor"]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError("crop_n_points_downscale_factor must be a positive integer")
+    for name in (
+        "pred_iou_thresh", "stability_score_thresh", "box_nms_thresh",
+        "crop_nms_thresh", "crop_overlap_ratio",
+    ):
+        value = result[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise ValueError(f"{name} must be between 0 and 1")
+    offset = result["stability_score_offset"]
+    if isinstance(offset, bool) or not isinstance(offset, (int, float)) or offset < 0:
+        raise ValueError("stability_score_offset must be non-negative")
+    if not isinstance(result["use_m2m"], bool):
+        raise ValueError("use_m2m must be a boolean")
+    return result
+
+
+@dataclass(frozen=True)
+class SAMSegment:
+    """One automatic SAM region and its segmentation—not anomaly—metadata."""
+
+    segment_id: int
+    mask: np.ndarray
+    area: int
+    bbox: tuple[float, float, float, float]
+    predicted_iou: float | None
+    stability_score: float | None
+    point_coords: tuple[tuple[float, float], ...]
+    crop_box: tuple[float, float, float, float] | None
+    centroid: tuple[float, float] | None
+    temporal_width: int
+    frequency_width: int
+    image_fraction: float
+    metadata: Mapping[str, Any]
+
+    @classmethod
+    def from_sam_annotation(cls, segment_id: int, annotation: Mapping[str, Any]) -> "SAMSegment":
+        """Convert the dictionary returned by the official automatic generator."""
+        mask = np.asarray(annotation.get("segmentation"))
+        if mask.ndim != 2:
+            raise ValueError("SAM annotation segmentation must be a 2-D mask")
+        mask = mask.astype(bool)
+        area = int(annotation.get("area", np.count_nonzero(mask)))
+        bbox_value = annotation.get("bbox")
+        if not isinstance(bbox_value, (list, tuple)) or len(bbox_value) != 4:
+            raise ValueError("SAM annotation bbox must contain [x, y, width, height]")
+        bbox = tuple(float(value) for value in bbox_value)
+        rows, columns = np.nonzero(mask)
+        centroid = None if not len(rows) else (float(columns.mean()), float(rows.mean()))
+        extras = {key: value for key, value in annotation.items() if key != "segmentation"}
+        points = tuple(tuple(float(v) for v in point) for point in annotation.get("point_coords", ()))
+        crop = annotation.get("crop_box")
+        return cls(
+            segment_id=segment_id, mask=mask, area=area, bbox=bbox,
+            predicted_iou=_optional_float(annotation.get("predicted_iou")),
+            stability_score=_optional_float(annotation.get("stability_score")),
+            point_coords=points,
+            crop_box=None if crop is None else tuple(float(v) for v in crop),
+            centroid=centroid, temporal_width=int(round(bbox[2])),
+            frequency_width=int(round(bbox[3])), image_fraction=area / mask.size,
+            metadata=extras,
+        )
+
+
+def _optional_float(value: object) -> float | None:
+    return None if value is None else float(value)
+
+
+def annotations_to_segments(annotations: Sequence[Mapping[str, Any]]) -> list[SAMSegment]:
+    """Return stable S1..SN regions, sorted from largest to smallest."""
+    ordered = sorted(annotations, key=lambda item: int(item.get("area", 0)), reverse=True)
+    return [SAMSegment.from_sam_annotation(index, item) for index, item in enumerate(ordered, 1)]
 
 
 @dataclass(frozen=True)
@@ -263,6 +368,126 @@ class SAMStructureSegmenter:
         if masks_array.ndim != 3 or len(masks_array) != len(scores_array):
             raise RuntimeError("SAM returned inconsistent masks and scores")
         return SAMSegmentationResult(masks_array, scores_array, logits_array)
+
+
+class SAMAutomaticMaskSegmenter:
+    """Wrapper around Meta's official ``SAM2AutomaticMaskGenerator``.
+
+    The model and generator are constructed once. A call to :meth:`generate_masks`
+    processes an image once; callers should not loop over manual prompts.
+    """
+
+    def __init__(
+        self,
+        checkpoint: str | PathLike[str] | None = None,
+        *,
+        model_config: str = "configs/sam2.1/sam2.1_hiera_s.yaml",
+        device: str = "auto",
+        generator: object | None = None,
+        **automatic_mask_options: object,
+    ) -> None:
+        self.options = validate_automatic_mask_options(automatic_mask_options)
+        if generator is not None:
+            self.generator = generator
+            self.device = device
+            return
+        if checkpoint is None:
+            raise ValueError("checkpoint is required when generator is not provided")
+        try:
+            import torch
+            from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+            from sam2.build_sam import build_sam2
+        except ImportError as error:
+            raise ImportError(SAM2_INSTALL_HINT) from error
+        selected_device = (
+            "cuda" if device == "auto" and torch.cuda.is_available() else
+            "cpu" if device == "auto" else device
+        )
+        if selected_device.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
+        model = build_sam2(model_config, str(checkpoint), device=selected_device)
+        self.generator = SAM2AutomaticMaskGenerator(model, **self.options)
+        self.device = selected_device
+
+    def generate_masks(self, image: np.ndarray) -> list[SAMSegment]:
+        """Generate all automatic regions for one uint8 RGB image."""
+        values = np.asarray(image)
+        if values.ndim != 3 or values.shape[2] != 3 or values.dtype != np.uint8:
+            raise ValueError("image must be an H x W x 3 uint8 array")
+        annotations = self.generator.generate(values)
+        if not isinstance(annotations, list):
+            raise RuntimeError("SAM automatic mask generator returned a non-list result")
+        segments = annotations_to_segments(annotations)
+        if any(segment.mask.shape != values.shape[:2] for segment in segments):
+            raise RuntimeError("SAM returned a mask whose shape differs from the input image")
+        return segments
+
+
+def plot_sam_automatic_masks(
+    stft: np.ndarray,
+    sam_image: np.ndarray,
+    segments: Sequence[SAMSegment],
+    spectral_time: np.ndarray,
+    frequencies: np.ndarray,
+    *,
+    max_labels: int = 40,
+):
+    """Plot the exact SAM input, every region, an overlay, and metadata table."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    magnitude, image = np.abs(np.asarray(stft)), np.asarray(sam_image)
+    if magnitude.shape != image.shape[:2]:
+        raise ValueError("stft and sam_image shapes must agree")
+    if len(spectral_time) != magnitude.shape[1] or len(frequencies) != magnitude.shape[0]:
+        raise ValueError("physical axes must match the STFT shape")
+    if max_labels < 0:
+        raise ValueError("max_labels must be non-negative")
+    labels = np.zeros(magnitude.shape, dtype=int)
+    # Largest regions first, with smaller regions remaining visible on top.
+    for segment in segments:
+        if segment.mask.shape != magnitude.shape:
+            raise ValueError("all segment masks must match the STFT shape")
+        labels[segment.mask] = segment.segment_id
+    masked_labels = np.where(labels, labels, np.nan)
+    common = {"x": spectral_time, "y": frequencies, "showscale": False}
+    figure = make_subplots(
+        rows=2, cols=3,
+        specs=[[{}, {}, {}], [{}, {"type": "table", "colspan": 2}, None]],
+        subplot_titles=("STFT originale (log1p magnitude)", "Image exacte donnée à SAM",
+                        f"Tous les masques ({len(segments)})", "Overlay des masques", "Résumé des segments"),
+    )
+    figure.add_trace(go.Heatmap(z=np.log1p(magnitude), colorscale="Viridis", **common), 1, 1)
+    figure.add_trace(go.Heatmap(z=image[..., 0], colorscale="Gray", **common), 1, 2)
+    figure.add_trace(go.Heatmap(z=masked_labels, colorscale="Turbo", **common), 1, 3)
+    figure.add_trace(go.Heatmap(z=np.log1p(magnitude), colorscale="Viridis", **common), 2, 1)
+    figure.add_trace(go.Heatmap(z=masked_labels, colorscale="Turbo", opacity=0.45, **common), 2, 1)
+    for segment in segments[:max_labels]:
+        x, y = segment.centroid or (segment.bbox[0], segment.bbox[1])
+        figure.add_annotation(x=spectral_time[int(np.clip(round(x), 0, len(spectral_time)-1))],
+                              y=frequencies[int(np.clip(round(y), 0, len(frequencies)-1))],
+                              text=f"S{segment.segment_id}", showarrow=False,
+                              font={"color": "white", "size": 9}, row=2, col=1)
+    headers = ["segment_id", "area", "predicted_iou", "stability_score", "bbox", "centroid", "fraction"]
+    columns = [
+        [f"S{s.segment_id}" for s in segments], [s.area for s in segments],
+        [_format_optional(s.predicted_iou) for s in segments],
+        [_format_optional(s.stability_score) for s in segments],
+        [str(tuple(round(v, 2) for v in s.bbox)) for s in segments],
+        [str(tuple(round(v, 2) for v in s.centroid)) if s.centroid else "—" for s in segments],
+        [f"{s.image_fraction:.4f}" for s in segments],
+    ]
+    figure.add_trace(go.Table(header={"values": headers}, cells={"values": columns}), 2, 2)
+    for row, col in ((1, 1), (1, 2), (1, 3), (2, 1)):
+        figure.update_xaxes(title_text="time (s)", row=row, col=col)
+        figure.update_yaxes(title_text="frequency (Hz)", row=row, col=col)
+    figure.update_layout(title="SAM 2 automatic spectrogram regions (no anomaly decision)",
+                         height=950, template="plotly_white")
+    return figure
+
+
+def _format_optional(value: float | None) -> str:
+    return "—" if value is None else f"{value:.4f}"
 
 
 def plot_sam_segmentation(
