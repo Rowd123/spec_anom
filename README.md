@@ -30,42 +30,33 @@ wget -P checkpoints \
 
 The application never downloads weights. All experiment parameters live in
 `examples/sam_structure_config.json`: analysis-window selection, STFT options,
-checkpoint, model config, device, prompt, and Plotly output. Choose `"auto"`
-(CUDA when `torch.cuda.is_available()`, otherwise CPU), `"cpu"`, `"cuda"`, or
-`"cuda:N"` for `sam.device`.
+checkpoint, model config, automatic-mask options, and Plotly output. Choose
+`"auto"` (CUDA when available, otherwise CPU), `"cpu"`, `"cuda"`, or `"cuda:N"`.
 
 ```bash
-# Uses examples/sam_structure_config.json by default
 python examples/sam_structure_usage.py
-
-# Or use a copied/modified experiment configuration
 python examples/sam_structure_usage.py --config path/to/my_sam_experiment.json
 ```
 
-The default model config is `configs/sam2.1/sam2.1_hiera_s.yaml` (the config for
-`sam2.1_hiera_small`). To use a bounding box, set `prompt.type` to `"box"` and
-`prompt.coordinates` to `[x_min, y_min, x_max, y_max]` in STFT image pixels. To
-use a point, set `prompt.type` to `"point"` and its two coordinates to
-`[time_seconds, frequency_hz]`; they are converted using the actual
-`spectral_time` and `frequencies` arrays. Python callers may use
-`segment_point([x, y])` or
-`segment_points([[x1, y1], ...], [1, 0, ...])`, where 1 is a positive prompt
-and 0 excludes a location.
+The small SAM 2.1 checkpoint uses
+`configs/sam2.1/sam2.1_hiera_s.yaml`. The experiment calls Meta's official
+`SAM2AutomaticMaskGenerator.generate(image)` API, without a user point or box.
+Each annotation becomes a `SAMSegment` retaining its mask, XYWH bounding box,
+predicted IoU, stability score, internal point coordinates, crop box, and extra
+metadata. These quality/stability values are segmentation metadata, not anomaly
+scores; this prototype makes no anomaly decision.
 
-With `multimask_output=True` (the wrapper default), SAM normally proposes
-multiple masks. `SAMSegmentationResult.scores` exposes its predicted mask-quality
-(predicted IoU) estimates; `best_mask` selects `argmax(scores)`. These scores are
-model confidence estimates, not measured IoU against ground truth and not
-physical relevance or anomaly scores. Use `compute_iou` and `compute_dice` only
-when an independent reference mask is available. The four-panel Plotly output
-shows the original STFT magnitude, exact grayscale input, selected mask, and
-overlay, and prints all returned scores.
+`points_per_side` strongly affects proposal count and compute because its grid
+scales quadratically. `crop_n_layers` can sharply increase both runtime and mask
+count; `points_per_batch` mainly trades memory for throughput. Quality and NMS
+thresholds plus `min_mask_region_area` determine which proposals survive. The
+default leaves area filtering disabled. Plotly shows the original STFT, exact
+SAM grayscale RGB input, all segment IDs, their overlay, and a metadata table.
+Labels are capped visually when crowded, but masks are not silently removed.
 
-This prototype does not assume that generic natural-image pretraining transfers
-to spectrograms. Results can be sensitive to prompt placement, STFT resolution,
-image scaling, weak/diffuse boundaries, and the domain gap. CPU inference may be
-slow. The automatic mask generator is deliberately deferred until box and point
-prompts have been evaluated reliably.
+This prototype tests generic natural-image segmentation on spectrogram shapes.
+Weak boundaries and the domain gap may matter. CPU inference can be very slow;
+CUDA is selected automatically when available. Only one STFT window is run.
 
 ## Pipeline architecture and energy dependency
 
