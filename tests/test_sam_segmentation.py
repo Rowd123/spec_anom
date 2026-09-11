@@ -2,12 +2,16 @@ import numpy as np
 import pytest
 
 from spectral_anomaly import (
+    SAMAutomaticMaskSegmenter,
+    SAMSegment,
     SAMStructureSegmenter,
     compute_dice,
     compute_iou,
     pixel_to_time_frequency,
+    plot_sam_automatic_masks,
     spectrogram_to_sam_image,
     time_frequency_to_pixel,
+    validate_automatic_mask_options,
 )
 
 
@@ -106,3 +110,74 @@ def test_wrapper_validates_inputs_without_loading_sam():
         segmenter.segment_points([[1, 2]], [2])
     with pytest.raises(ValueError, match="checkpoint"):
         SAMStructureSegmenter()
+
+
+class FakeAutomaticGenerator:
+    def generate(self, image):
+        mask = np.zeros(image.shape[:2], dtype=bool)
+        mask[1:3, 2:5] = True
+        return [{"segmentation": mask, "area": 6, "bbox": [2, 1, 3, 2],
+                 "predicted_iou": 0.91, "stability_score": 0.87,
+                 "point_coords": [[3, 2]], "crop_box": [0, 0, 5, 4],
+                 "custom": "preserved"}]
+
+
+def test_automatic_result_structure_and_geometric_features_without_sam():
+    segments = SAMAutomaticMaskSegmenter(generator=FakeAutomaticGenerator()).generate_masks(
+        np.zeros((4, 5, 3), dtype=np.uint8)
+    )
+    segment = segments[0]
+    assert isinstance(segment, SAMSegment)
+    assert (segment.segment_id, segment.area) == (1, 6)
+    assert segment.bbox == (2.0, 1.0, 3.0, 2.0)
+    assert (segment.temporal_width, segment.frequency_width) == (3, 2)
+    assert segment.centroid == pytest.approx((3.0, 1.5))
+    assert segment.image_fraction == pytest.approx(0.3)
+    assert segment.metadata["custom"] == "preserved"
+
+
+def test_automatic_segments_are_sorted_by_area_and_renumbered():
+    mask = np.ones((2, 3), dtype=bool)
+    annotations = [{"segmentation": mask, "area": area, "bbox": [0, 0, 3, 2]}
+                   for area in (2, 6, 4)]
+
+    class Generator:
+        def generate(self, image):
+            return annotations
+
+    segments = SAMAutomaticMaskSegmenter(generator=Generator()).generate_masks(
+        np.zeros((2, 3, 3), dtype=np.uint8)
+    )
+    assert [segment.area for segment in segments] == [6, 4, 2]
+    assert [segment.segment_id for segment in segments] == [1, 2, 3]
+
+
+@pytest.mark.parametrize("options, message", [
+    ({"points_per_side": 0}, "positive integer"),
+    ({"pred_iou_thresh": 1.1}, "between 0 and 1"),
+    ({"min_mask_region_area": -1}, "non-negative integer"),
+    ({"not_a_sam_option": 1}, "unknown"),
+])
+def test_automatic_mask_parameter_validation(options, message):
+    with pytest.raises(ValueError, match=message):
+        validate_automatic_mask_options(options)
+
+
+def test_automatic_mask_plot_uses_a_table_compatible_subplot():
+    image = np.zeros((4, 5, 3), dtype=np.uint8)
+    segment = SAMAutomaticMaskSegmenter(
+        generator=FakeAutomaticGenerator()
+    ).generate_masks(image)[0]
+
+    figure = plot_sam_automatic_masks(
+        np.zeros((4, 5), dtype=complex),
+        image,
+        [segment],
+        np.arange(5),
+        np.arange(4),
+        representation_name="MSST",
+    )
+
+    assert figure.data[-1].type == "table"
+    assert figure.data[-1].header.values[0] == "segment_id"
+    assert figure.layout.annotations[0].text.startswith("MSST originale")
