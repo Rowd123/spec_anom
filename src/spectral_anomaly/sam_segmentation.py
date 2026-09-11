@@ -37,6 +37,13 @@ AUTOMATIC_MASK_DEFAULTS: dict[str, object] = {
 }
 
 
+def validate_spectral_representation(representation: object) -> str:
+    """Validate and return the spectral representation selected for SAM."""
+    if representation not in {"stft", "msst"}:
+        raise ValueError("representation must be either 'stft' or 'msst'")
+    return str(representation)
+
+
 def validate_automatic_mask_options(options: Mapping[str, object]) -> dict[str, object]:
     """Validate options accepted by Meta's ``SAM2AutomaticMaskGenerator``."""
     unknown = set(options) - set(AUTOMATIC_MASK_DEFAULTS)
@@ -153,22 +160,27 @@ class SAMSegmentationResult:
 
 
 def spectrogram_to_sam_image(
-    spectrogram: np.ndarray,
+    spectral_map: np.ndarray,
     *,
+    transform: str = "log",
     percentiles: tuple[float, float] = (1.0, 99.0),
     epsilon: float = 1e-12,
 ) -> np.ndarray:
-    """Convert a complex STFT/MSST map (or its magnitude) to grayscale RGB.
+    """Convert a spectral representation (or its magnitude) to grayscale RGB.
 
-    The conversion is ``log1p(abs(spectrogram))``, percentile clipping, and linear
-    scaling to uint8. No significance/coherence mask or color map is involved.
+    ``transform="log"`` optionally compresses the magnitude's dynamic range with
+    ``log1p``; ``transform="linear"`` leaves it linear.  Both paths then use the
+    same percentile clipping and uint8 scaling.  No significance/coherence mask
+    or color map is involved.
     """
-    values = np.asarray(spectrogram)
+    values = np.asarray(spectral_map)
     if values.ndim != 2 or values.size == 0:
-        raise ValueError("spectrogram must be a non-empty two-dimensional array")
+        raise ValueError("spectral_map must be a non-empty two-dimensional array")
     magnitude = np.abs(values)
     if not np.all(np.isfinite(magnitude)):
-        raise ValueError("spectrogram must contain only finite values")
+        raise ValueError("spectral_map must contain only finite values")
+    if transform not in {"log", "linear"}:
+        raise ValueError("transform must be either 'log' or 'linear'")
     if (
         len(percentiles) != 2
         or not 0 <= percentiles[0] < percentiles[1] <= 100
@@ -177,7 +189,7 @@ def spectrogram_to_sam_image(
     if not np.isfinite(epsilon) or epsilon <= 0:
         raise ValueError("epsilon must be positive and finite")
 
-    image = np.log1p(magnitude)
+    image = np.log1p(magnitude) if transform == "log" else magnitude
     low, high = np.percentile(image, percentiles)
     image = np.clip(image, low, high)
     image = (image - low) / (high - low + epsilon)
@@ -205,14 +217,14 @@ def _coordinate_to_pixel(value: float, axis: np.ndarray, name: str) -> float:
     pixels = np.arange(values.size, dtype=float)
     ordered_pixels = pixels[::-1] if descending else pixels
     if value < ordered[0] or value > ordered[-1]:
-        raise ValueError(f"{name} coordinate is outside the STFT axis")
+        raise ValueError(f"{name} coordinate is outside the spectral axis")
     return float(np.interp(value, ordered, ordered_pixels))
 
 
 def _pixel_to_coordinate(pixel: float, axis: np.ndarray, name: str) -> float:
     values, _ = _validated_axis(axis, name)
     if not np.isfinite(pixel) or pixel < 0 or pixel > values.size - 1:
-        raise ValueError(f"{name} pixel is outside the STFT image")
+        raise ValueError(f"{name} pixel is outside the spectral image")
     return float(np.interp(pixel, np.arange(values.size, dtype=float), values))
 
 
@@ -424,31 +436,32 @@ class SAMAutomaticMaskSegmenter:
 
 
 def plot_sam_automatic_masks(
-    spectrogram: np.ndarray,
+    spectral_map: np.ndarray,
     sam_image: np.ndarray,
     segments: Sequence[SAMSegment],
     spectral_time: np.ndarray,
     frequencies: np.ndarray,
     *,
     max_labels: int = 40,
-    representation_name: str = "spectrogram",
+    representation_name: str = "spectral representation",
+    image_transform: str = "log",
 ):
     """Plot the exact SAM input, every region, an overlay, and metadata table."""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
-    magnitude, image = np.abs(np.asarray(spectrogram)), np.asarray(sam_image)
+    magnitude, image = np.abs(np.asarray(spectral_map)), np.asarray(sam_image)
     if magnitude.shape != image.shape[:2]:
-        raise ValueError("spectrogram and sam_image shapes must agree")
+        raise ValueError("spectral_map and sam_image shapes must agree")
     if len(spectral_time) != magnitude.shape[1] or len(frequencies) != magnitude.shape[0]:
-        raise ValueError("physical axes must match the spectrogram shape")
+        raise ValueError("physical axes must match the spectral map shape")
     if max_labels < 0:
         raise ValueError("max_labels must be non-negative")
     labels = np.zeros(magnitude.shape, dtype=int)
     # Largest regions first, with smaller regions remaining visible on top.
     for segment in segments:
         if segment.mask.shape != magnitude.shape:
-            raise ValueError("all segment masks must match the spectrogram shape")
+            raise ValueError("all segment masks must match the spectral map shape")
         labels[segment.mask] = segment.segment_id
     masked_labels = np.where(labels, labels, np.nan)
     common = {"x": spectral_time, "y": frequencies, "showscale": False}
@@ -482,7 +495,9 @@ def plot_sam_automatic_masks(
     for row, col in ((1, 1), (1, 2), (1, 3), (2, 1)):
         figure.update_xaxes(title_text="time (s)", row=row, col=col)
         figure.update_yaxes(title_text="frequency (Hz)", row=row, col=col)
-    figure.update_layout(title="SAM 2 automatic spectrogram regions (no anomaly decision)",
+    figure.update_layout(title=("SAM 2 automatic spectral regions (no anomaly decision)"
+                                f"<br>Representation: {representation_name.upper()}"
+                                f" — Image transform: {image_transform}"),
                          height=950, template="plotly_white")
     return figure
 
