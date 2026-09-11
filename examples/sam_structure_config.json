@@ -9,7 +9,9 @@
     "min_valid_samples": 250,
     "max_interpolation_gap": 2
   },
-  "stft": {
+  "msst": {
+    "iteration_count": 3,
+    "center": true,
     "window": "hann",
     "n_fft": 256,
     "window_length": 128,

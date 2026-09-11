@@ -175,7 +175,9 @@ def test_automatic_mask_plot_uses_a_table_compatible_subplot():
         [segment],
         np.arange(5),
         np.arange(4),
+        representation_name="MSST",
     )
 
     assert figure.data[-1].type == "table"
     assert figure.data[-1].header.values[0] == "segment_id"
+    assert figure.layout.annotations[0].text.startswith("MSST originale")

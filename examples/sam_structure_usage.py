@@ -1,4 +1,4 @@
-"""Generate prompt-free SAM 2.1 regions for one STFT window."""
+"""Generate prompt-free SAM 2.1 regions for one MSST window."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import numpy as np
 from spectral_anomaly import (
     AnalysisPeriod,
     SAMAutomaticMaskSegmenter,
-    analyze_stft_periods,
+    analyze_msst_periods,
     plot_sam_automatic_masks,
     prepare_analysis_windows,
     spectrogram_to_sam_image,
@@ -33,7 +33,7 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError(f"configuration file does not exist: {path}") from error
     except json.JSONDecodeError as error:
         raise ValueError(f"invalid JSON configuration: {error}") from error
-    required = {"analysis", "stft", "sam", "automatic_mask_generation", "output"}
+    required = {"analysis", "msst", "sam", "automatic_mask_generation", "output"}
     if not isinstance(config, dict) or not required.issubset(config):
         raise ValueError(f"configuration must contain {', '.join(sorted(required))}")
     if any(not isinstance(config[name], dict) for name in required):
@@ -52,7 +52,7 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def main(config_path: Path) -> None:
-    """Compute one existing STFT, run automatic SAM once, and write Plotly HTML."""
+    """Compute one MSST, run automatic SAM once, and write Plotly HTML."""
     config = load_config(config_path)
     analysis = config["analysis"]
     metadata, windows = prepare_analysis_windows(
@@ -75,11 +75,11 @@ def main(config_path: Path) -> None:
     period = AnalysisPeriod(window.time, window.signal, window.observed_mask,
                             window.interpolated_mask, np.zeros(len(window.signal), dtype=bool),
                             (window_id,))
-    spectral = analyze_stft_periods(
+    spectral = analyze_msst_periods(
         {window_id: period}, sampling_frequency=analysis["sampling_frequency"],
-        **config["stft"],
+        **config["msst"],
     )[window_id]
-    image = spectrogram_to_sam_image(spectral.stft)
+    image = spectrogram_to_sam_image(spectral.msst)
     sam = config["sam"]
     segmenter = SAMAutomaticMaskSegmenter(
         sam["checkpoint"], model_config=sam["model_config"], device=sam["device"],
@@ -92,7 +92,7 @@ def main(config_path: Path) -> None:
     elapsed = time.perf_counter() - started
 
     print(metadata.loc[[window_id], ["start_time", "end_time"]].to_string())
-    print(f"STFT shape: {spectral.stft.shape}")
+    print(f"MSST shape: {spectral.msst.shape}")
     print(f"SAM image shape: {image.shape}")
     print(f"Generated masks: {len(segments)}")
     print(f"Retained masks: {len(segments)} (no post-generation filtering)")
@@ -101,7 +101,8 @@ def main(config_path: Path) -> None:
     output = Path(config["output"]["html"])
     output.parent.mkdir(parents=True, exist_ok=True)
     figure = plot_sam_automatic_masks(
-        spectral.stft, image, segments, spectral.spectral_time, spectral.frequencies
+        spectral.msst, image, segments, spectral.spectral_time, spectral.frequencies,
+        representation_name="MSST",
     )
     figure.write_html(output, include_plotlyjs=True, full_html=True)
     print(f"Output written to {output}")

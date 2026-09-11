@@ -1,4 +1,4 @@
-"""Optional SAM 2 experiment for segmenting objects in STFT spectrograms.
+"""Optional SAM 2 experiment for segmenting objects in spectral representations.
 
 This module is deliberately independent from the threshold- and structure-tensor
 pipeline.  Importing it does not import PyTorch or SAM 2; those dependencies are
@@ -153,22 +153,22 @@ class SAMSegmentationResult:
 
 
 def spectrogram_to_sam_image(
-    stft: np.ndarray,
+    spectrogram: np.ndarray,
     *,
     percentiles: tuple[float, float] = (1.0, 99.0),
     epsilon: float = 1e-12,
 ) -> np.ndarray:
-    """Convert a complex STFT (or its magnitude) to a robust grayscale RGB image.
+    """Convert a complex STFT/MSST map (or its magnitude) to grayscale RGB.
 
-    The conversion is ``log1p(abs(stft))``, percentile clipping, and linear
+    The conversion is ``log1p(abs(spectrogram))``, percentile clipping, and linear
     scaling to uint8. No significance/coherence mask or color map is involved.
     """
-    values = np.asarray(stft)
+    values = np.asarray(spectrogram)
     if values.ndim != 2 or values.size == 0:
-        raise ValueError("stft must be a non-empty two-dimensional array")
+        raise ValueError("spectrogram must be a non-empty two-dimensional array")
     magnitude = np.abs(values)
     if not np.all(np.isfinite(magnitude)):
-        raise ValueError("stft must contain only finite values")
+        raise ValueError("spectrogram must contain only finite values")
     if (
         len(percentiles) != 2
         or not 0 <= percentiles[0] < percentiles[1] <= 100
@@ -424,37 +424,38 @@ class SAMAutomaticMaskSegmenter:
 
 
 def plot_sam_automatic_masks(
-    stft: np.ndarray,
+    spectrogram: np.ndarray,
     sam_image: np.ndarray,
     segments: Sequence[SAMSegment],
     spectral_time: np.ndarray,
     frequencies: np.ndarray,
     *,
     max_labels: int = 40,
+    representation_name: str = "spectrogram",
 ):
     """Plot the exact SAM input, every region, an overlay, and metadata table."""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
-    magnitude, image = np.abs(np.asarray(stft)), np.asarray(sam_image)
+    magnitude, image = np.abs(np.asarray(spectrogram)), np.asarray(sam_image)
     if magnitude.shape != image.shape[:2]:
-        raise ValueError("stft and sam_image shapes must agree")
+        raise ValueError("spectrogram and sam_image shapes must agree")
     if len(spectral_time) != magnitude.shape[1] or len(frequencies) != magnitude.shape[0]:
-        raise ValueError("physical axes must match the STFT shape")
+        raise ValueError("physical axes must match the spectrogram shape")
     if max_labels < 0:
         raise ValueError("max_labels must be non-negative")
     labels = np.zeros(magnitude.shape, dtype=int)
     # Largest regions first, with smaller regions remaining visible on top.
     for segment in segments:
         if segment.mask.shape != magnitude.shape:
-            raise ValueError("all segment masks must match the STFT shape")
+            raise ValueError("all segment masks must match the spectrogram shape")
         labels[segment.mask] = segment.segment_id
     masked_labels = np.where(labels, labels, np.nan)
     common = {"x": spectral_time, "y": frequencies, "showscale": False}
     figure = make_subplots(
         rows=2, cols=3,
         specs=[[{}, {}, {}], [{}, {"type": "table", "colspan": 2}, None]],
-        subplot_titles=("STFT originale (log1p magnitude)", "Image exacte donnée à SAM",
+        subplot_titles=(f"{representation_name} originale (log1p magnitude)", "Image exacte donnée à SAM",
                         f"Tous les masques ({len(segments)})", "Overlay des masques", "Résumé des segments"),
     )
     figure.add_trace(go.Heatmap(z=np.log1p(magnitude), colorscale="Viridis", **common), 1, 1)

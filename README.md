@@ -10,7 +10,7 @@ scope for the prototype.
 ## Optional SAM 2.1 spectrogram experiment
 
 `sam_segmentation.py` is a removable experiment parallel to the existing
-morphology path. It consumes the **existing complex STFT**, converts its
+morphology path. It computes the **complex MSST representation**, converts its
 magnitude with `log1p`, clips at the 1st/99th percentiles, scales to uint8, and
 repeats the grayscale channel as RGB. It never consumes the local-normalization,
 significance, coherence, connected-component, or candidate-structure masks, and
@@ -29,7 +29,7 @@ wget -P checkpoints \
 ```
 
 The application never downloads weights. All experiment parameters live in
-`examples/sam_structure_config.json`: analysis-window selection, STFT options,
+`examples/sam_structure_config.json`: analysis-window selection, MSST options,
 checkpoint, model config, automatic-mask options, and Plotly output. Choose
 `"auto"` (CUDA when available, otherwise CPU), `"cpu"`, `"cuda"`, or `"cuda:N"`.
 
@@ -50,13 +50,13 @@ scores; this prototype makes no anomaly decision.
 scales quadratically. `crop_n_layers` can sharply increase both runtime and mask
 count; `points_per_batch` mainly trades memory for throughput. Quality and NMS
 thresholds plus `min_mask_region_area` determine which proposals survive. The
-default leaves area filtering disabled. Plotly shows the original STFT, exact
+default leaves area filtering disabled. Plotly shows the original MSST, exact
 SAM grayscale RGB input, all segment IDs, their overlay, and a metadata table.
 Labels are capped visually when crowded, but masks are not silently removed.
 
 This prototype tests generic natural-image segmentation on spectrogram shapes.
 Weak boundaries and the domain gap may matter. CPU inference can be very slow;
-CUDA is selected automatically when available. Only one STFT window is run.
+CUDA is selected automatically when available. Only one MSST window is run.
 
 ## Pipeline architecture and energy dependency
 
