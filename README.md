@@ -7,6 +7,66 @@ scoring remains available but is no longer required to select windows for the
 structural MSST path. Classification and clustering are intentionally out of
 scope for the prototype.
 
+## Optional SAM 2.1 spectrogram experiment
+
+`sam_segmentation.py` is a removable experiment parallel to the existing
+morphology path. It consumes the **existing complex STFT**, converts its
+magnitude with `log1p`, clips at the 1st/99th percentiles, scales to uint8, and
+repeats the grayscale channel as RGB. It never consumes the local-normalization,
+significance, coherence, connected-component, or candidate-structure masks, and
+it makes no anomaly decision.
+
+SAM is intentionally not a mandatory package dependency. In a separate virtual
+environment, follow Meta's official installation approach:
+
+```bash
+# Install a CPU/CUDA PyTorch build suitable for the machine first:
+# https://pytorch.org/get-started/locally/
+python -m pip install 'git+https://github.com/facebookresearch/sam2.git'
+mkdir -p checkpoints
+wget -P checkpoints \
+  https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt
+```
+
+The application never downloads weights. All experiment parameters live in
+`examples/sam_structure_config.json`: analysis-window selection, STFT options,
+checkpoint, model config, device, prompt, and Plotly output. Choose `"auto"`
+(CUDA when `torch.cuda.is_available()`, otherwise CPU), `"cpu"`, `"cuda"`, or
+`"cuda:N"` for `sam.device`.
+
+```bash
+# Uses examples/sam_structure_config.json by default
+python examples/sam_structure_usage.py
+
+# Or use a copied/modified experiment configuration
+python examples/sam_structure_usage.py --config path/to/my_sam_experiment.json
+```
+
+The default model config is `configs/sam2.1/sam2.1_hiera_s.yaml` (the config for
+`sam2.1_hiera_small`). To use a bounding box, set `prompt.type` to `"box"` and
+`prompt.coordinates` to `[x_min, y_min, x_max, y_max]` in STFT image pixels. To
+use a point, set `prompt.type` to `"point"` and its two coordinates to
+`[time_seconds, frequency_hz]`; they are converted using the actual
+`spectral_time` and `frequencies` arrays. Python callers may use
+`segment_point([x, y])` or
+`segment_points([[x1, y1], ...], [1, 0, ...])`, where 1 is a positive prompt
+and 0 excludes a location.
+
+With `multimask_output=True` (the wrapper default), SAM normally proposes
+multiple masks. `SAMSegmentationResult.scores` exposes its predicted mask-quality
+(predicted IoU) estimates; `best_mask` selects `argmax(scores)`. These scores are
+model confidence estimates, not measured IoU against ground truth and not
+physical relevance or anomaly scores. Use `compute_iou` and `compute_dice` only
+when an independent reference mask is available. The four-panel Plotly output
+shows the original STFT magnitude, exact grayscale input, selected mask, and
+overlay, and prints all returned scores.
+
+This prototype does not assume that generic natural-image pretraining transfers
+to spectrograms. Results can be sensitive to prompt placement, STFT resolution,
+image scaling, weak/diffuse boundaries, and the domain gap. CPU inference may be
+slow. The automatic mask generator is deliberately deferred until box and point
+prompts have been evaluated reliably.
+
 ## Pipeline architecture and energy dependency
 
 The historical path is:
