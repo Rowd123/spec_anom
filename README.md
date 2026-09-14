@@ -557,3 +557,48 @@ for window_id in result.index[result["suspicious"]]:
 
     # Later: send regularly_sampled_signal to the MSST implementation.
 ```
+# Diagnostic ciblé SAM 2 (bande 45–47 s)
+
+Le script `examples/sam_band_diagnostic.py` isole le diagnostic de segmentation :
+il relit les tableaux numériques du dernier appel `Plotly.newPlot` de
+`sam_automatic_masks.html` (ou un fichier NPZ extrait auparavant), sans capture
+d'écran, recomposition du signal, extraction de caractéristiques ou détection
+d'anomalie. Il réutilise exactement l'image RGB uint8 et ses axes pour :
+
+1. convertir le point physique avec `time_frequency_to_pixel`, afficher son
+   aller-retour et l'intensité de son voisinage ;
+2. conserver et afficher séparément **toutes** les propositions du point positif
+   (`multimask_output=True`) et leurs scores ;
+3. faire de même avec une boîte optionnelle ;
+4. exécuter le générateur automatique avec le même objet modèle et afficher
+   chacun de ses masques dans un panneau distinct ;
+5. observer le point de grille automatique le plus proche et ses propositions
+   brutes (score, aire, couverture du point diagnostiqué), puis les nombres de
+   propositions après le seuil d'IoU,
+   après le seuil de stabilité et aux entrées/sorties de NMS. Les fonctions du
+   module SAM installé sont temporairement enveloppées puis restaurées ; aucun
+   fichier de la bibliothèque n'est modifié. Ces compteurs servent à localiser
+   une suppression, mais l'appartenance d'une proposition précise à la bande
+   doit être confirmée visuellement avant d'attribuer la cause à un filtre.
+
+Depuis la racine du dépôt :
+
+```bash
+python examples/sam_band_diagnostic.py \
+  --config examples/sam_band_diagnostic_config.json
+```
+
+Les paramètres `point.time` et `point.frequency` règlent le point. Les quatre
+limites de `box` règlent la boîte et `box.enabled` permet de la désactiver.
+`input_html` désigne le HTML original ; `input_npz` peut à la place désigner la
+copie exacte écrite par `save_extracted_npz`. Les sections `sam` et
+`automatic_mask_generation` doivent reprendre le checkpoint, la configuration
+du modèle et les seuils de l'essai original. `output_html` règle la visualisation
+Plotly. Au survol d'un panneau de masque, chaque pixel est explicitement décrit
+par « masque » ou « aucun masque ».
+
+Si le HTML manque, le script s'arrête avant toute approximation. Si le
+checkpoint ou SAM 2 manque, l'extraction, la validation des axes et du point
+sont distinguées de l'inférence non exécutée dans le message d'erreur. Les
+valeurs par défaut de temps/fréquence et de boîte sont des paramètres de départ :
+la fréquence doit être ajustée à la bande visible dans l'entrée exacte.
