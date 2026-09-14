@@ -1,5 +1,5 @@
 {
-  "representation": "msst",
+  "representation": "stft",
   "analysis": {
     "sampling_frequency": 1.0,
     "sampling_period": "1s",
@@ -34,8 +34,20 @@
     "stability_score_thresh": 0.8,
     "min_mask_region_area": 0
   },
+  "guided_segmentation": {
+    "enabled": true,
+    "exclusion_seconds": 4.0,
+    "neighborhood_seconds": 24.0,
+    "epsilon": 1e-12,
+    "min_valid_references": 6,
+    "contrast_threshold": 6.0,
+    "min_time_spacing_seconds": 4.0,
+    "min_frequency_spacing_hz": 0.02,
+    "max_points": 12,
+    "mask_iou_threshold": 0.85
+  },
   "output": {
-    "html": "sam_automatic_masks.html",
+    "html": "sam_stft_guided_comparison.html",
     "show": false
   }
 }

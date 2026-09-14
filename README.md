@@ -56,7 +56,54 @@ Labels are capped visually when crowded, but masks are not silently removed.
 
 This prototype tests generic natural-image segmentation on spectrogram shapes.
 Weak boundaries and the domain gap may matter. CPU inference can be very slow;
-CUDA is selected automatically when available. Only one MSST window is run.
+CUDA is selected automatically when available. Only one spectral window is run.
+
+### Segmentation STFT guidée par contraste énergétique
+
+Le même exemple propose désormais un mode `guided_segmentation`, en parallèle
+du générateur automatique. À partir de la STFT complexe originale, il calcule
+`E = |STFT|²`, puis, pour chaque fréquence, le fond médian aux temps vérifiant
+`exclusion_seconds < |u-t| <= neighborhood_seconds`. Les durées sont comparées
+à l'axe temporel réel : les bords ne bouclent pas, les références non finies sont
+ignorées et `min_valid_references` références sont exigées. Une valeur non
+calculable reste NaN et ne peut donc pas produire de point SAM.
+
+Le contraste est `E / max(B, epsilon)`. Pour l'essai, `epsilon=1e-12` dans les
+mêmes unités d'énergie que `|STFT|²`. Ce plancher doit être adapté au plancher de
+bruit physique des données : il empêche une division par zéro et évite qu'une
+estimation de fond numériquement négligeable crée un rapport arbitrairement
+grand. Il ne constitue ni un seuil d'anomalie ni une normalisation de l'image.
+L'image SAM reste produite une seule fois par `spectrogram_to_sam_image` et est
+strictement identique pour les modes automatique et guidé.
+
+Les paramètres documentés de la première passe sont : exclusion centrale 4 s,
+portée 24 s, au moins 6 références, contraste minimal 6, espacement minimal 4 s
+et 0,02 Hz, au plus 12 points. Les maxima locaux 8-voisins sont classés par
+contraste décroissant avant l'espacement physique. Chaque point positif donne
+une prédiction indépendante avec toutes ses variantes inspectables ; le masque
+au meilleur score d'IoU prédit par SAM est retenu, conformément à
+`SAMSegmentationResult.best_mask`. L'espacement des points est terminé avant la
+déduplication et n'en dépend pas.
+
+Les masques retenus sont ensuite classés par score SAM décroissant et comparés
+sur leurs pixels binaires réels. Un masque est supprimé dès que son IoU atteint
+`mask_iou_threshold=0.85` avec un masque déjà conservé. Le résultat brut reste
+disponible et chaque suppression conserve le point supprimé, le point gardé et
+l'IoU. Le rapport Plotly indique les nombres automatiques, guidés bruts et guidés
+dédupliqués, montre STFT et contraste avec les points, puis chaque masque dans
+un panneau séparé.
+
+Reproduction depuis la racine :
+
+```bash
+PYTHONPATH=src python examples/sam_structure_usage.py \
+  --config examples/sam_structure_config.json
+```
+
+Cette configuration utilise `representation="stft"`. Mettre
+`guided_segmentation.enabled` à `false` préserve le rapport automatique
+historique. SAM 2 et le checkpoint configuré restent des dépendances locales :
+le programme ne télécharge jamais de poids.
 
 ## Pipeline architecture and energy dependency
 
@@ -557,3 +604,131 @@ for window_id in result.index[result["suspicious"]]:
 
     # Later: send regularly_sampled_signal to the MSST implementation.
 ```
+# Diagnostic ciblé SAM 2 (bande 45–47 s)
+
+Le script `examples/sam_band_diagnostic.py` isole le diagnostic de segmentation :
+il relit les tableaux numériques du dernier appel `Plotly.newPlot` de
+`sam_automatic_masks.html` (ou un fichier NPZ extrait auparavant), sans capture
+d'écran, recomposition du signal, extraction de caractéristiques ou détection
+d'anomalie. Il réutilise exactement l'image RGB uint8 et ses axes pour :
+
+1. convertir le point physique avec `time_frequency_to_pixel`, afficher son
+   aller-retour et l'intensité de son voisinage ;
+2. conserver et afficher séparément **toutes** les propositions du point positif
+   (`multimask_output=True`) et leurs scores ;
+3. faire de même avec une boîte optionnelle ;
+4. exécuter le générateur automatique avec le même objet modèle et afficher
+   chacun de ses masques dans un panneau distinct ;
+5. observer le point de grille automatique le plus proche et ses propositions
+   brutes (score, aire, couverture du point diagnostiqué), puis les nombres de
+   propositions après le seuil d'IoU,
+   après le seuil de stabilité et aux entrées/sorties de NMS. Les fonctions du
+   module SAM installé sont temporairement enveloppées puis restaurées ; aucun
+   fichier de la bibliothèque n'est modifié. Ces compteurs servent à localiser
+   une suppression, mais l'appartenance d'une proposition précise à la bande
+   doit être confirmée visuellement avant d'attribuer la cause à un filtre.
+
+Depuis la racine du dépôt :
+
+```bash
+python examples/sam_band_diagnostic.py \
+  --config examples/sam_band_diagnostic_config.json
+```
+
+Les paramètres `point.time` et `point.frequency` règlent le point. Les quatre
+limites de `box` règlent la boîte et `box.enabled` permet de la désactiver.
+`input_html` désigne le HTML original ; `input_npz` peut à la place désigner la
+copie exacte écrite par `save_extracted_npz`. Les sections `sam` et
+`automatic_mask_generation` doivent reprendre le checkpoint, la configuration
+du modèle et les seuils de l'essai original. `output_html` règle la visualisation
+Plotly. Au survol d'un panneau de masque, chaque pixel est explicitement décrit
+par « masque » ou « aucun masque ».
+
+Si le HTML manque, le script s'arrête avant toute approximation. Si le
+checkpoint ou SAM 2 manque, l'extraction, la validation des axes et du point
+sont distinguées de l'inférence non exécutée dans le message d'erreur. Les
+valeurs par défaut de temps/fréquence et de boîte sont des paramètres de départ :
+la fréquence doit être ajustée à la bande visible dans l'entrée exacte.
+
+## Pipeline des segments automatiques STFT
+
+`segment_pipeline.py` poursuit exclusivement la sortie des masques automatiques
+SAM : chaque masque individuel devient une observation, même s'il recouvre un
+autre masque. `stft_to_psd` suppose les coefficients FFT bruts non normalisés de
+la STFT `ssqueezepy` et applique `|X|² / (fs sum(window²))`. Le résultat est une
+densité spectrale de puissance en unité du signal au carré par hertz. Pour le
+spectre unilatéral d'un signal réel, les raies intérieures sont doublées ; DC et,
+si `n_fft` est pair, Nyquist ne le sont pas. La fenêtre périodique, sa longueur,
+`n_fft`, `fs` et le choix unilatéral sont donc des paramètres indispensables et
+doivent être ceux de la transformation ayant produit la STFT.
+
+Les bords de cellules sont les milieux entre coordonnées physiques, avec
+extrapolation d'une demi-cellule aux extrémités. Ainsi, une cellule seule garde
+une durée, une largeur et une aire temps×fréquence strictement positives.
+L'énergie intégrée est `sum(P Δt Δf)` (unité signal²·seconde), l'aire est en
+seconde·hertz et la densité moyenne en signal²/hertz. Les gradients temporel et
+fréquentiel sont calculés sur toute la PSD avec les axes physiques avant
+l'application du masque. Le contraste médian réutilise le fond temporel à
+fréquence constante et reste descriptif : il ne filtre jamais un segment.
+
+Les dix colonnes exportées sont `integrated_energy`, `physical_area`,
+`mean_density`, `duration`, `frequency_width`, `central_frequency`,
+`frequency_dispersion`, `temporal_variation_q95`,
+`frequency_variation_q95` et `local_contrast`. L'identité `E = A D` rend les
+trois premières redondantes ; les listes de variables Isolation Forest et
+HDBSCAN sont donc configurables indépendamment. Les identifiants, temps,
+coordonnées, scores SAM, validité et motif d'invalidité restent dans la table,
+mais hors matrices de modèles. Masque vide, énergie nulle, PSD non finie et fond
+local insuffisant ont des états invalides explicites.
+
+Chaque branche possède son propre prétraitement : transformations `log1p`
+configurables puis centrage médian et division par l'IQR. Ces paramètres ne sont
+ajustés que sur le jeu d'apprentissage. Le découpage chronologique groupe les
+fenêtres qui se recouvrent et ne divise jamais les segments d'une même fenêtre.
+Il produit successivement `train`, `calibration` et `evaluation`.
+
+Isolation Forest retourne uniquement `-score_samples` : une valeur haute est
+plus atypique, sans être une probabilité. `IsolationForest.predict` n'est jamais
+appelé. Une queue SPOT/POT supérieure est ajustée séparément par flux sur la
+calibration après gel du modèle et du prétraitement. Le seuil précédant chaque
+observation est enregistré ; les alertes ne mettent pas le fond à jour. Un état
+sans assez d'excès, sans diversité ou avec ajustement numérique invalide reste
+« non prêt » et sa décision vaut indéterminée. L'observation est un segment : les
+segments corrélés et les fenêtres recouvrantes limitent donc l'interprétation du
+risque `q`. Toute réestimation des modèles efface la calibration SPOT.
+
+Les calculs Isolation Forest et HDBSCAN sont deux tâches indépendantes lancées
+en parallèle, puis réunies sur les lignes et identifiants d'origine. HDBSCAN
+reçoit exactement les mêmes lignes valides, alertes SPOT comprises. Il
+est ajusté avec `prediction_data=True`, puis les nouvelles lignes utilisent
+`approximate_predict`, qui conserve les groupes existants. Le label `-1` reste
+« sans groupe » et ne devient jamais une alerte. Découvrir de nouveaux groupes
+demande un réajustement et une nouvelle version de modèle.
+
+La configuration reproductible expose la graine et les paramètres des deux
+branches, le risque SPOT `0.001`, le quantile initial `0.80`, au moins 6 excès,
+ainsi que les listes et transformations de caractéristiques. Après production
+d'un `segment_features.csv` avec `build_segment_table`, exécuter :
+
+```bash
+python -m pip install -e '.[pipeline]'
+python examples/segment_pipeline_usage.py prepare-demo --config examples/segment_pipeline_config.json
+python examples/segment_pipeline_usage.py train --config examples/segment_pipeline_config.json
+python examples/segment_pipeline_usage.py calibrate --config examples/segment_pipeline_config.json
+python examples/segment_pipeline_usage.py analyze --config examples/segment_pipeline_config.json
+```
+
+`prepare-demo` fabrique 360 observations à partir de STFT déterministes contenant
+ton permanent, bouffée localisée et énergie large bande. Ses masques imitent le
+contrat de sortie SAM afin de tester le pipeline sans checkpoint ; ce corpus ne
+mesure donc pas la qualité de segmentation et doit être remplacé par les tables
+issues des masques SAM automatiques réels pour toute évaluation.
+
+Le fichier pickle contient modèles, deux prétraitements, ordre des variables,
+versions et états SPOT ; il ne doit être chargé que depuis une source de
+confiance. Le CSV final réunit les métadonnées et caractéristiques avec score
+Isolation Forest, seuil/état/décision SPOT, groupe/force HDBSCAN et versions. La
+fonction `plot_segment_pipeline` distingue visuellement contours alertés, score
+et seuil, puis couleurs de groupes. Un corpus réel de nombreuses fenêtres reste
+nécessaire : les quelques régions d'une image ne permettent de valider ni la
+queue extrême, ni les groupes, ni les performances de détection.

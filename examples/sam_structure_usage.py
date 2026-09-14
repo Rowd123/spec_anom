@@ -14,11 +14,13 @@ import numpy as np
 from spectral_anomaly import (
     AnalysisPeriod,
     SAMAutomaticMaskSegmenter,
+    SAMStructureSegmenter,
     analyze_msst_periods,
     analyze_stft_periods,
-    plot_sam_automatic_masks,
+    plot_sam_automatic_masks, plot_sam_guided_comparison,
     prepare_analysis_windows,
     spectrogram_to_sam_image,
+    temporal_energy_contrast, select_contrast_points, segment_contrast_points,
     validate_automatic_mask_options,
     validate_spectral_representation,
 )
@@ -57,6 +59,9 @@ def load_config(path: Path) -> dict[str, Any]:
     config["automatic_mask_generation"] = validate_automatic_mask_options(
         config["automatic_mask_generation"]
     )
+    guided = config.get("guided_segmentation", {})
+    if guided.get("enabled", False) and config["representation"] != "stft":
+        raise ValueError("guided_segmentation requires representation='stft'")
     output = config["output"]
     if not isinstance(output.get("html"), str) or not isinstance(output.get("show"), bool):
         raise ValueError("output.html must be a string and output.show a boolean")
@@ -102,6 +107,33 @@ def main(config_path: Path) -> None:
         spectral_map, transform=image_options["transform"],
         percentiles=tuple(image_options["percentiles"]),
     )
+    print(metadata.loc[[window_id], ["start_time", "end_time"]].to_string())
+    print(f"Spectral representation: {representation.upper()}")
+    print(f"Image transform: {image_options['transform']}")
+    print(f"Percentile clipping: {image_options['percentiles']}")
+    print(f"Spectral map shape: {spectral_map.shape}")
+    print(f"SAM image shape: {image.shape}")
+    guided_options = config.get("guided_segmentation", {})
+    contrast, points = None, []
+    if guided_options.get("enabled", False):
+        contrast = temporal_energy_contrast(
+            spectral.stft, spectral.spectral_time,
+            exclusion_seconds=guided_options["exclusion_seconds"],
+            neighborhood_seconds=guided_options["neighborhood_seconds"],
+            epsilon=guided_options["epsilon"],
+            min_valid_references=guided_options["min_valid_references"],
+        )
+        points = select_contrast_points(
+            contrast, spectral.spectral_time, spectral.frequencies,
+            threshold=guided_options["contrast_threshold"],
+            min_time_spacing_seconds=guided_options["min_time_spacing_seconds"],
+            min_frequency_spacing_hz=guided_options["min_frequency_spacing_hz"],
+            max_points=guided_options["max_points"],
+        )
+        print(f"Guided points selected before SAM: {len(points)}")
+        for index, point in enumerate(points, 1):
+            print(f"  P{index}: t={point.time:.6g}s, f={point.frequency:.6g}Hz, "
+                  f"contrast={point.contrast:.6g}, pixel={point.pixel}")
     sam = config["sam"]
     segmenter = SAMAutomaticMaskSegmenter(
         sam["checkpoint"], model_config=sam["model_config"], device=sam["device"],
@@ -113,23 +145,35 @@ def main(config_path: Path) -> None:
     segments = segmenter.generate_masks(image)
     elapsed = time.perf_counter() - started
 
-    print(metadata.loc[[window_id], ["start_time", "end_time"]].to_string())
-    print(f"Spectral representation: {representation.upper()}")
-    print(f"Image transform: {image_options['transform']}")
-    print(f"Percentile clipping: {image_options['percentiles']}")
-    print(f"Spectral map shape: {spectral_map.shape}")
-    print(f"SAM image shape: {image.shape}")
     print(f"Generated masks: {len(segments)}")
     print(f"Retained masks: {len(segments)} (no post-generation filtering)")
     print("Filtered after generation: 0")
     print(f"Inference time: {elapsed:.3f} s")
     output = Path(config["output"]["html"])
     output.parent.mkdir(parents=True, exist_ok=True)
-    figure = plot_sam_automatic_masks(
-        spectral_map, image, segments, spectral.spectral_time, spectral.frequencies,
-        representation_name=representation.upper(),
-        image_transform=image_options["transform"],
-    )
+    if guided_options.get("enabled", False):
+        assert contrast is not None
+        prompted = SAMStructureSegmenter(
+            sam["checkpoint"], model_config=sam["model_config"], device=sam["device"]
+        )
+        guided = segment_contrast_points(
+            prompted, image, points, iou_threshold=guided_options["mask_iou_threshold"]
+        )
+        print(f"Guided points: {len(points)}")
+        print(f"Guided masks: {len(guided.raw_masks)} raw, {len(guided.masks)} deduplicated")
+        for duplicate in guided.duplicates:
+            print(f"  P{duplicate.removed_point_index} duplicate of "
+                  f"P{duplicate.kept_point_index}: IoU={duplicate.iou:.4f}")
+        figure = plot_sam_guided_comparison(
+            spectral.stft, contrast, image, spectral.spectral_time,
+            spectral.frequencies, points, guided, segments,
+        )
+    else:
+        figure = plot_sam_automatic_masks(
+            spectral_map, image, segments, spectral.spectral_time, spectral.frequencies,
+            representation_name=representation.upper(),
+            image_transform=image_options["transform"],
+        )
     figure.write_html(output, include_plotlyjs=True, full_html=True)
     print(f"Output written to {output}")
     if config["output"]["show"]:

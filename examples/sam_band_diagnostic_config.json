@@ -1,0 +1,22 @@
+{
+  "input_html": "sam_automatic_masks.html",
+  "input_npz": null,
+  "save_extracted_npz": "sam_band_exact_input.npz",
+  "point": {"time": 46.0, "frequency": 0.20},
+  "box": {"enabled": true, "time_min": 45.0, "time_max": 47.0,
+          "frequency_min": 0.05, "frequency_max": 0.45},
+  "sam": {
+    "checkpoint": "checkpoints/sam2.1_hiera_small.pt",
+    "model_config": "configs/sam2.1/sam2.1_hiera_s.yaml",
+    "device": "auto"
+  },
+  "automatic_mask_generation": {
+    "points_per_side": 32,
+    "points_per_batch": 64,
+    "pred_iou_thresh": 0.8,
+    "stability_score_thresh": 0.8,
+    "min_mask_region_area": 0
+  },
+  "output_html": "sam_band_diagnostic.html",
+  "instrument_automatic_generator": true
+}
