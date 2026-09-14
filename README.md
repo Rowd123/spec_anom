@@ -56,7 +56,54 @@ Labels are capped visually when crowded, but masks are not silently removed.
 
 This prototype tests generic natural-image segmentation on spectrogram shapes.
 Weak boundaries and the domain gap may matter. CPU inference can be very slow;
-CUDA is selected automatically when available. Only one MSST window is run.
+CUDA is selected automatically when available. Only one spectral window is run.
+
+### Segmentation STFT guidée par contraste énergétique
+
+Le même exemple propose désormais un mode `guided_segmentation`, en parallèle
+du générateur automatique. À partir de la STFT complexe originale, il calcule
+`E = |STFT|²`, puis, pour chaque fréquence, le fond médian aux temps vérifiant
+`exclusion_seconds < |u-t| <= neighborhood_seconds`. Les durées sont comparées
+à l'axe temporel réel : les bords ne bouclent pas, les références non finies sont
+ignorées et `min_valid_references` références sont exigées. Une valeur non
+calculable reste NaN et ne peut donc pas produire de point SAM.
+
+Le contraste est `E / max(B, epsilon)`. Pour l'essai, `epsilon=1e-12` dans les
+mêmes unités d'énergie que `|STFT|²`. Ce plancher doit être adapté au plancher de
+bruit physique des données : il empêche une division par zéro et évite qu'une
+estimation de fond numériquement négligeable crée un rapport arbitrairement
+grand. Il ne constitue ni un seuil d'anomalie ni une normalisation de l'image.
+L'image SAM reste produite une seule fois par `spectrogram_to_sam_image` et est
+strictement identique pour les modes automatique et guidé.
+
+Les paramètres documentés de la première passe sont : exclusion centrale 4 s,
+portée 24 s, au moins 6 références, contraste minimal 6, espacement minimal 4 s
+et 0,02 Hz, au plus 12 points. Les maxima locaux 8-voisins sont classés par
+contraste décroissant avant l'espacement physique. Chaque point positif donne
+une prédiction indépendante avec toutes ses variantes inspectables ; le masque
+au meilleur score d'IoU prédit par SAM est retenu, conformément à
+`SAMSegmentationResult.best_mask`. L'espacement des points est terminé avant la
+déduplication et n'en dépend pas.
+
+Les masques retenus sont ensuite classés par score SAM décroissant et comparés
+sur leurs pixels binaires réels. Un masque est supprimé dès que son IoU atteint
+`mask_iou_threshold=0.85` avec un masque déjà conservé. Le résultat brut reste
+disponible et chaque suppression conserve le point supprimé, le point gardé et
+l'IoU. Le rapport Plotly indique les nombres automatiques, guidés bruts et guidés
+dédupliqués, montre STFT et contraste avec les points, puis chaque masque dans
+un panneau séparé.
+
+Reproduction depuis la racine :
+
+```bash
+PYTHONPATH=src python examples/sam_structure_usage.py \
+  --config examples/sam_structure_config.json
+```
+
+Cette configuration utilise `representation="stft"`. Mettre
+`guided_segmentation.enabled` à `false` préserve le rapport automatique
+historique. SAM 2 et le checkpoint configuré restent des dépendances locales :
+le programme ne télécharge jamais de poids.
 
 ## Pipeline architecture and energy dependency
 
