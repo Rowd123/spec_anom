@@ -159,6 +159,48 @@ class SAMSegmentationResult:
         return float(self.scores[self.best_index])
 
 
+@dataclass(frozen=True)
+class ContrastPoint:
+    """One local energy-contrast maximum in physical and image coordinates."""
+
+    time: float
+    frequency: float
+    contrast: float
+    time_index: int
+    frequency_index: int
+    pixel: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class GuidedSAMMask:
+    """The selected SAM proposal for one independently prompted point."""
+
+    point_index: int
+    point: ContrastPoint
+    selected_index: int
+    mask: np.ndarray
+    score: float
+    proposals: SAMSegmentationResult
+
+
+@dataclass(frozen=True)
+class GuidedMaskDuplicate:
+    """A guided mask suppressed because it overlaps a better-scored mask."""
+
+    removed_point_index: int
+    kept_point_index: int
+    iou: float
+
+
+@dataclass(frozen=True)
+class GuidedSAMResult:
+    """Raw per-point predictions and mask-IoU deduplication outcome."""
+
+    raw_masks: tuple[GuidedSAMMask, ...]
+    masks: tuple[GuidedSAMMask, ...]
+    duplicates: tuple[GuidedMaskDuplicate, ...]
+
+
 def spectrogram_to_sam_image(
     spectral_map: np.ndarray,
     *,
@@ -195,6 +237,104 @@ def spectrogram_to_sam_image(
     image = (image - low) / (high - low + epsilon)
     grayscale = (255 * image).astype(np.uint8)
     return np.repeat(grayscale[..., None], 3, axis=2)
+
+
+def temporal_energy_contrast(
+    stft: np.ndarray,
+    spectral_time: np.ndarray,
+    *,
+    exclusion_seconds: float,
+    neighborhood_seconds: float,
+    epsilon: float,
+    min_valid_references: int = 3,
+) -> np.ndarray:
+    """Compute same-frequency temporal energy contrast on a real time axis.
+
+    Reference samples satisfy ``exclusion_seconds < abs(u-t) <=
+    neighborhood_seconds``.  Only available samples are used at boundaries;
+    there is no wrapping. Non-finite energy and insufficient backgrounds yield
+    NaN, which deliberately cannot become a prompt.
+    """
+    values = np.asarray(stft)
+    times, _ = _validated_axis(spectral_time, "spectral_time")
+    if values.ndim != 2 or values.shape[1] != len(times):
+        raise ValueError("stft must be 2-D with columns matching spectral_time")
+    if (not np.isfinite(exclusion_seconds) or not np.isfinite(neighborhood_seconds)
+            or exclusion_seconds < 0 or neighborhood_seconds <= exclusion_seconds):
+        raise ValueError("durations must satisfy 0 <= exclusion_seconds < neighborhood_seconds")
+    if not np.isfinite(epsilon) or epsilon <= 0:
+        raise ValueError("epsilon must be positive and finite")
+    if (not isinstance(min_valid_references, int) or isinstance(min_valid_references, bool)
+            or min_valid_references < 1):
+        raise ValueError("min_valid_references must be a positive integer")
+
+    energy = np.abs(values) ** 2
+    energy[~np.isfinite(energy)] = np.nan
+    contrast = np.full(energy.shape, np.nan, dtype=float)
+    for column, time in enumerate(times):
+        distance = np.abs(times - time)
+        references = (distance > exclusion_seconds) & (distance <= neighborhood_seconds)
+        if not references.any():
+            continue
+        candidates = energy[:, references]
+        counts = np.count_nonzero(np.isfinite(candidates), axis=1)
+        background = np.full(energy.shape[0], np.nan)
+        enough = counts >= min_valid_references
+        if enough.any():
+            background[enough] = np.nanmedian(candidates[enough], axis=1)
+        valid = enough & np.isfinite(energy[:, column])
+        contrast[valid, column] = energy[valid, column] / np.maximum(
+            background[valid], epsilon
+        )
+    return contrast
+
+
+def select_contrast_points(
+    contrast: np.ndarray,
+    spectral_time: np.ndarray,
+    frequencies: np.ndarray,
+    *,
+    threshold: float,
+    min_time_spacing_seconds: float,
+    min_frequency_spacing_hz: float,
+    max_points: int,
+) -> list[ContrastPoint]:
+    """Select 8-neighbourhood maxima, then greedily space them in physical units."""
+    from scipy.ndimage import maximum_filter
+
+    values = np.asarray(contrast, dtype=float)
+    times, _ = _validated_axis(spectral_time, "spectral_time")
+    frequency_values, _ = _validated_axis(frequencies, "frequencies")
+    if values.shape != (len(frequency_values), len(times)):
+        raise ValueError("contrast shape must match frequency and time axes")
+    if not np.isfinite(threshold):
+        raise ValueError("threshold must be finite")
+    if min_time_spacing_seconds < 0 or min_frequency_spacing_hz < 0:
+        raise ValueError("point spacings must be non-negative")
+    if not isinstance(max_points, int) or isinstance(max_points, bool) or max_points < 0:
+        raise ValueError("max_points must be a non-negative integer")
+    if max_points == 0:
+        return []
+    finite_values = np.where(np.isfinite(values), values, -np.inf)
+    local = finite_values == maximum_filter(finite_values, size=3, mode="constant", cval=-np.inf)
+    rows, columns = np.nonzero(local & (finite_values >= threshold))
+    candidates = sorted(zip(rows, columns), key=lambda rc: (-values[rc], rc[1], rc[0]))
+    selected: list[ContrastPoint] = []
+    for row, column in candidates:
+        time, frequency = float(times[column]), float(frequency_values[row])
+        # Points are too close only when they are close along both dimensions.
+        if any(abs(time - p.time) < min_time_spacing_seconds and
+               abs(frequency - p.frequency) < min_frequency_spacing_hz for p in selected):
+            continue
+        pixel = time_frequency_to_pixel(time, frequency, times, frequency_values)
+        if not np.allclose(pixel, (column, row), atol=1e-6):
+            raise RuntimeError("physical-to-image conversion changed the STFT bin location")
+        selected.append(ContrastPoint(
+            time, frequency, float(values[row, column]), int(column), int(row), pixel,
+        ))
+        if len(selected) == max_points:
+            break
+    return selected
 
 
 def _validated_axis(axis: np.ndarray, name: str) -> tuple[np.ndarray, bool]:
@@ -433,6 +573,115 @@ class SAMAutomaticMaskSegmenter:
         if any(segment.mask.shape != values.shape[:2] for segment in segments):
             raise RuntimeError("SAM returned a mask whose shape differs from the input image")
         return segments
+
+
+def deduplicate_guided_masks(
+    masks: Sequence[GuidedSAMMask], *, iou_threshold: float
+) -> tuple[list[GuidedSAMMask], list[GuidedMaskDuplicate]]:
+    """Greedily retain quality-ranked masks using binary-mask (not box) IoU."""
+    if not np.isfinite(iou_threshold) or not 0 <= iou_threshold <= 1:
+        raise ValueError("iou_threshold must be between 0 and 1")
+    ordered = sorted(masks, key=lambda item: (-item.score, item.point_index))
+    kept: list[GuidedSAMMask] = []
+    duplicates: list[GuidedMaskDuplicate] = []
+    for candidate in ordered:
+        matches = [(existing, compute_iou(candidate.mask, existing.mask)) for existing in kept]
+        duplicate = next(((existing, overlap) for existing, overlap in matches
+                          if overlap >= iou_threshold), None)
+        if duplicate is None:
+            kept.append(candidate)
+        else:
+            duplicates.append(GuidedMaskDuplicate(
+                candidate.point_index, duplicate[0].point_index, duplicate[1]
+            ))
+    return kept, duplicates
+
+
+def segment_contrast_points(
+    segmenter: SAMStructureSegmenter,
+    image: np.ndarray,
+    points: Sequence[ContrastPoint],
+    *,
+    iou_threshold: float,
+) -> GuidedSAMResult:
+    """Prompt SAM independently and retain its highest predicted-IoU proposal."""
+    segmenter.set_image(image)
+    raw: list[GuidedSAMMask] = []
+    for point_index, point in enumerate(points, 1):
+        result = segmenter.segment_point(point.pixel, multimask_output=True)
+        selected = result.best_index
+        raw.append(GuidedSAMMask(
+            point_index, point, selected, result.best_mask, result.best_score, result
+        ))
+    kept, duplicates = deduplicate_guided_masks(raw, iou_threshold=iou_threshold)
+    return GuidedSAMResult(tuple(raw), tuple(kept), tuple(duplicates))
+
+
+def plot_sam_guided_comparison(
+    stft: np.ndarray,
+    contrast: np.ndarray,
+    sam_image: np.ndarray,
+    spectral_time: np.ndarray,
+    frequencies: np.ndarray,
+    points: Sequence[ContrastPoint],
+    guided: GuidedSAMResult,
+    automatic: Sequence[SAMSegment],
+):
+    """Compare STFT, contrast, and individually inspectable automatic/guided masks."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    magnitude, image = np.abs(np.asarray(stft)), np.asarray(sam_image)
+    if magnitude.shape != np.asarray(contrast).shape or magnitude.shape != image.shape[:2]:
+        raise ValueError("stft, contrast, and sam_image shapes must agree")
+    panels: list[tuple[str, np.ndarray | None]] = [
+        ("STFT originale (log1p magnitude)", None), ("Contraste énergétique local", None)
+    ]
+    panels.extend((f"Auto S{s.segment_id} — score={_format_optional(s.predicted_iou)}", s.mask)
+                  for s in automatic)
+    for selected in guided.raw_masks:
+        for variant_index, (mask, score) in enumerate(
+                zip(selected.proposals.masks, selected.proposals.scores)):
+            suffix = " — retenu" if variant_index == selected.selected_index else ""
+            panels.append((f"Guidé P{selected.point_index} variante M{variant_index + 1} "
+                           f"— score={score:.4f}{suffix}", mask))
+    columns, rows = 3, (len(panels) + 2) // 3
+    figure = make_subplots(rows=rows, cols=columns, subplot_titles=[title for title, _ in panels])
+    common = {"x": spectral_time, "y": frequencies, "showscale": False}
+    for index, (_, mask) in enumerate(panels):
+        row, column = divmod(index, columns); row += 1; column += 1
+        base = np.log1p(magnitude) if index != 1 else contrast
+        figure.add_trace(go.Heatmap(z=base, colorscale="Viridis", **common), row, column)
+        if mask is not None:
+            removed = next((d for d in guided.duplicates
+                            if (panels[index][0].startswith(f"Guidé P{d.removed_point_index} ")
+                                and "— retenu" in panels[index][0])), None)
+            custom = np.where(mask, "masque", "aucun masque")
+            figure.add_trace(go.Heatmap(
+                z=mask.astype(np.uint8), customdata=custom, **common,
+                colorscale=[[0, "rgba(0,0,0,0)"], [.499, "rgba(0,0,0,0)"],
+                            [.5, "rgba(255,0,0,.45)"], [1, "rgba(255,0,0,.45)"]],
+                hovertemplate="%{customdata}<br>t=%{x}<br>f=%{y}<extra></extra>",
+            ), row, column)
+            if removed is not None:
+                figure.add_annotation(text=(f"doublon de P{removed.kept_point_index}, "
+                                            f"IoU={removed.iou:.3f}"), x=.5, y=.05,
+                                      xref="x domain", yref="y domain", showarrow=False,
+                                      bgcolor="white", row=row, col=column)
+        if index == 1:
+            figure.add_trace(go.Scatter(
+                x=[p.time for p in points], y=[p.frequency for p in points], mode="markers+text",
+                text=[f"P{i}" for i in range(1, len(points) + 1)], textposition="top center",
+                customdata=[p.contrast for p in points], marker={"color": "cyan", "size": 8},
+                hovertemplate="%{text}<br>t=%{x}<br>f=%{y}<br>C=%{customdata:.3g}<extra></extra>",
+                showlegend=False,
+            ), row, column)
+    figure.update_layout(
+        title=(f"SAM 2 automatique={len(automatic)} — guidé brut={len(guided.raw_masks)}, "
+               f"après déduplication={len(guided.masks)}"),
+        height=max(650, rows * 340), template="plotly_white",
+    )
+    return figure
 
 
 def plot_sam_automatic_masks(

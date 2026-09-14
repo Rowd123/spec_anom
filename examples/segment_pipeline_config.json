@@ -1,0 +1,32 @@
+{
+  "input_csv": "segment_features.csv",
+  "model_file": "segment_models.pkl",
+  "result_csv": "segment_results.csv",
+  "stft_psd": {"sampling_frequency": 1.0, "window": "hann", "window_length": 128,
+               "n_fft": 256, "one_sided": true},
+  "local_contrast": {"exclusion_seconds": 4.0, "neighborhood_seconds": 24.0,
+                     "epsilon": 1e-12, "min_valid_references": 6},
+  "split": {"train_fraction": 0.6, "calibration_fraction": 0.2},
+  "isolation_forest": {
+    "features": ["integrated_energy", "physical_area", "duration", "frequency_width",
+                 "central_frequency", "frequency_dispersion", "temporal_variation_q95",
+                 "frequency_variation_q95", "local_contrast"],
+    "log1p_features": ["integrated_energy", "physical_area", "duration", "frequency_width",
+                       "frequency_dispersion", "temporal_variation_q95",
+                       "frequency_variation_q95", "local_contrast"],
+    "options": {"n_estimators": 200, "max_samples": "auto", "contamination": "auto",
+                "random_state": 42, "n_jobs": -1}
+  },
+  "hdbscan": {
+    "features": ["mean_density", "duration", "frequency_width", "central_frequency",
+                 "frequency_dispersion", "temporal_variation_q95",
+                 "frequency_variation_q95", "local_contrast"],
+    "log1p_features": ["mean_density", "duration", "frequency_width", "frequency_dispersion",
+                       "temporal_variation_q95", "frequency_variation_q95", "local_contrast"],
+    "options": {"min_cluster_size": 15, "min_samples": 8, "metric": "euclidean",
+                "cluster_selection_method": "eom"}
+  },
+  "spot": {"risk": 0.001, "initial_quantile": 0.80, "min_excesses": 6},
+  "versions": {"model": "segment-model-v1", "isolation_preprocessing": "if-pre-v1",
+               "clustering_preprocessing": "cluster-pre-v1"}
+}

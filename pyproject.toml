@@ -21,6 +21,7 @@ test = ["pytest>=8"]
 # SAM 2 itself is installed from Meta's repository; this extra documents the
 # local PyTorch prerequisite without making the experiment mandatory.
 sam = ["torch>=2.5"]
+pipeline = ["scikit-learn>=1.4", "hdbscan>=0.8.33"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
