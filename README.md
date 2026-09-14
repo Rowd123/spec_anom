@@ -10,7 +10,7 @@ scope for the prototype.
 ## Optional SAM 2.1 spectrogram experiment
 
 `sam_segmentation.py` is a removable experiment parallel to the existing
-morphology path. It consumes the **existing complex STFT**, converts its
+morphology path. It computes the **complex MSST representation**, converts its
 magnitude with `log1p`, clips at the 1st/99th percentiles, scales to uint8, and
 repeats the grayscale channel as RGB. It never consumes the local-normalization,
 significance, coherence, connected-component, or candidate-structure masks, and
@@ -28,44 +28,82 @@ wget -P checkpoints \
   https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt
 ```
 
-The application never downloads weights. Supply the checkpoint explicitly and
-choose `--device auto` (CUDA when `torch.cuda.is_available()`, otherwise CPU),
-`--device cpu`, or `--device cuda`:
+The application never downloads weights. All experiment parameters live in
+`examples/sam_structure_config.json`: analysis-window selection, MSST options,
+checkpoint, model config, automatic-mask options, and Plotly output. Choose
+`"auto"` (CUDA when available, otherwise CPU), `"cpu"`, `"cuda"`, or `"cuda:N"`.
 
 ```bash
-# Bounding-box prompt in image pixels: x=time column, y=frequency row
-python examples/sam_structure_usage.py \
-  --checkpoint checkpoints/sam2.1_hiera_small.pt \
-  --device auto --box 20 10 50 35 --output sam_box.html
-
-# Positive point in physical coordinates: TIME_SECONDS FREQUENCY_HZ
-python examples/sam_structure_usage.py \
-  --checkpoint checkpoints/sam2.1_hiera_small.pt \
-  --device auto --point 120 0.15 --output sam_point.html
+python examples/sam_structure_usage.py
+python examples/sam_structure_usage.py --config path/to/my_sam_experiment.json
 ```
 
-The default model config is `configs/sam2.1/sam2.1_hiera_s.yaml` (the config for
-`sam2.1_hiera_small`). `--model-config` can override it. A box is
-`[x_min, y_min, x_max, y_max]` in STFT image pixels. The example's point is
-`(time, frequency)` and is converted using the actual `spectral_time` and
-`frequencies` arrays. Python callers may use `segment_point([x, y])` or
-`segment_points([[x1, y1], ...], [1, 0, ...])`, where 1 is a positive prompt
-and 0 excludes a location.
+The small SAM 2.1 checkpoint uses
+`configs/sam2.1/sam2.1_hiera_s.yaml`. The experiment calls Meta's official
+`SAM2AutomaticMaskGenerator.generate(image)` API, without a user point or box.
+Each annotation becomes a `SAMSegment` retaining its mask, XYWH bounding box,
+predicted IoU, stability score, internal point coordinates, crop box, and extra
+metadata. These quality/stability values are segmentation metadata, not anomaly
+scores; this prototype makes no anomaly decision.
 
-With `multimask_output=True` (the wrapper default), SAM normally proposes
-multiple masks. `SAMSegmentationResult.scores` exposes its predicted mask-quality
-(predicted IoU) estimates; `best_mask` selects `argmax(scores)`. These scores are
-model confidence estimates, not measured IoU against ground truth and not
-physical relevance or anomaly scores. Use `compute_iou` and `compute_dice` only
-when an independent reference mask is available. The four-panel Plotly output
-shows the original STFT magnitude, exact grayscale input, selected mask, and
-overlay, and prints all returned scores.
+`points_per_side` strongly affects proposal count and compute because its grid
+scales quadratically. `crop_n_layers` can sharply increase both runtime and mask
+count; `points_per_batch` mainly trades memory for throughput. Quality and NMS
+thresholds plus `min_mask_region_area` determine which proposals survive. The
+default leaves area filtering disabled. Plotly shows the original MSST, exact
+SAM grayscale RGB input, all segment IDs, their overlay, and a metadata table.
+Labels are capped visually when crowded, but masks are not silently removed.
 
-This prototype does not assume that generic natural-image pretraining transfers
-to spectrograms. Results can be sensitive to prompt placement, STFT resolution,
-image scaling, weak/diffuse boundaries, and the domain gap. CPU inference may be
-slow. The automatic mask generator is deliberately deferred until box and point
-prompts have been evaluated reliably.
+This prototype tests generic natural-image segmentation on spectrogram shapes.
+Weak boundaries and the domain gap may matter. CPU inference can be very slow;
+CUDA is selected automatically when available. Only one spectral window is run.
+
+### Segmentation STFT guidée par contraste énergétique
+
+Le même exemple propose désormais un mode `guided_segmentation`, en parallèle
+du générateur automatique. À partir de la STFT complexe originale, il calcule
+`E = |STFT|²`, puis, pour chaque fréquence, le fond médian aux temps vérifiant
+`exclusion_seconds < |u-t| <= neighborhood_seconds`. Les durées sont comparées
+à l'axe temporel réel : les bords ne bouclent pas, les références non finies sont
+ignorées et `min_valid_references` références sont exigées. Une valeur non
+calculable reste NaN et ne peut donc pas produire de point SAM.
+
+Le contraste est `E / max(B, epsilon)`. Pour l'essai, `epsilon=1e-12` dans les
+mêmes unités d'énergie que `|STFT|²`. Ce plancher doit être adapté au plancher de
+bruit physique des données : il empêche une division par zéro et évite qu'une
+estimation de fond numériquement négligeable crée un rapport arbitrairement
+grand. Il ne constitue ni un seuil d'anomalie ni une normalisation de l'image.
+L'image SAM reste produite une seule fois par `spectrogram_to_sam_image` et est
+strictement identique pour les modes automatique et guidé.
+
+Les paramètres documentés de la première passe sont : exclusion centrale 4 s,
+portée 24 s, au moins 6 références, contraste minimal 6, espacement minimal 4 s
+et 0,02 Hz, au plus 12 points. Les maxima locaux 8-voisins sont classés par
+contraste décroissant avant l'espacement physique. Chaque point positif donne
+une prédiction indépendante avec toutes ses variantes inspectables ; le masque
+au meilleur score d'IoU prédit par SAM est retenu, conformément à
+`SAMSegmentationResult.best_mask`. L'espacement des points est terminé avant la
+déduplication et n'en dépend pas.
+
+Les masques retenus sont ensuite classés par score SAM décroissant et comparés
+sur leurs pixels binaires réels. Un masque est supprimé dès que son IoU atteint
+`mask_iou_threshold=0.85` avec un masque déjà conservé. Le résultat brut reste
+disponible et chaque suppression conserve le point supprimé, le point gardé et
+l'IoU. Le rapport Plotly indique les nombres automatiques, guidés bruts et guidés
+dédupliqués, montre STFT et contraste avec les points, puis chaque masque dans
+un panneau séparé.
+
+Reproduction depuis la racine :
+
+```bash
+PYTHONPATH=src python examples/sam_structure_usage.py \
+  --config examples/sam_structure_config.json
+```
+
+Cette configuration utilise `representation="stft"`. Mettre
+`guided_segmentation.enabled` à `false` préserve le rapport automatique
+historique. SAM 2 et le checkpoint configuré restent des dépendances locales :
+le programme ne télécharge jamais de poids.
 
 ## Pipeline architecture and energy dependency
 
@@ -566,3 +604,48 @@ for window_id in result.index[result["suspicious"]]:
 
     # Later: send regularly_sampled_signal to the MSST implementation.
 ```
+# Diagnostic ciblé SAM 2 (bande 45–47 s)
+
+Le script `examples/sam_band_diagnostic.py` isole le diagnostic de segmentation :
+il relit les tableaux numériques du dernier appel `Plotly.newPlot` de
+`sam_automatic_masks.html` (ou un fichier NPZ extrait auparavant), sans capture
+d'écran, recomposition du signal, extraction de caractéristiques ou détection
+d'anomalie. Il réutilise exactement l'image RGB uint8 et ses axes pour :
+
+1. convertir le point physique avec `time_frequency_to_pixel`, afficher son
+   aller-retour et l'intensité de son voisinage ;
+2. conserver et afficher séparément **toutes** les propositions du point positif
+   (`multimask_output=True`) et leurs scores ;
+3. faire de même avec une boîte optionnelle ;
+4. exécuter le générateur automatique avec le même objet modèle et afficher
+   chacun de ses masques dans un panneau distinct ;
+5. observer le point de grille automatique le plus proche et ses propositions
+   brutes (score, aire, couverture du point diagnostiqué), puis les nombres de
+   propositions après le seuil d'IoU,
+   après le seuil de stabilité et aux entrées/sorties de NMS. Les fonctions du
+   module SAM installé sont temporairement enveloppées puis restaurées ; aucun
+   fichier de la bibliothèque n'est modifié. Ces compteurs servent à localiser
+   une suppression, mais l'appartenance d'une proposition précise à la bande
+   doit être confirmée visuellement avant d'attribuer la cause à un filtre.
+
+Depuis la racine du dépôt :
+
+```bash
+python examples/sam_band_diagnostic.py \
+  --config examples/sam_band_diagnostic_config.json
+```
+
+Les paramètres `point.time` et `point.frequency` règlent le point. Les quatre
+limites de `box` règlent la boîte et `box.enabled` permet de la désactiver.
+`input_html` désigne le HTML original ; `input_npz` peut à la place désigner la
+copie exacte écrite par `save_extracted_npz`. Les sections `sam` et
+`automatic_mask_generation` doivent reprendre le checkpoint, la configuration
+du modèle et les seuils de l'essai original. `output_html` règle la visualisation
+Plotly. Au survol d'un panneau de masque, chaque pixel est explicitement décrit
+par « masque » ou « aucun masque ».
+
+Si le HTML manque, le script s'arrête avant toute approximation. Si le
+checkpoint ou SAM 2 manque, l'extraction, la validation des axes et du point
+sont distinguées de l'inférence non exécutée dans le message d'erreur. Les
+valeurs par défaut de temps/fréquence et de boîte sont des paramètres de départ :
+la fréquence doit être ajustée à la bande visible dans l'entrée exacte.

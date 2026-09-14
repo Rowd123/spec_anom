@@ -2,12 +2,22 @@ import numpy as np
 import pytest
 
 from spectral_anomaly import (
+    SAMAutomaticMaskSegmenter,
+    ContrastPoint,
+    GuidedSAMMask,
+    SAMSegment,
     SAMStructureSegmenter,
     compute_dice,
     compute_iou,
+    deduplicate_guided_masks,
     pixel_to_time_frequency,
+    plot_sam_automatic_masks,
     spectrogram_to_sam_image,
+    select_contrast_points,
+    temporal_energy_contrast,
     time_frequency_to_pixel,
+    validate_automatic_mask_options,
+    validate_spectral_representation,
 )
 
 
@@ -37,6 +47,48 @@ def test_spectrogram_conversion_is_rgb_uint8_without_colormap():
 def test_constant_spectrogram_is_well_defined():
     image = spectrogram_to_sam_image(np.ones((3, 4)))
     assert not image.any()
+
+
+@pytest.mark.parametrize("transform", ["linear", "log"])
+def test_spectral_map_transforms_support_complex_input_without_mutation(transform):
+    spectral_map = np.array([[0, 1 + 2j, 4], [2j, 8, 32]], dtype=complex)
+    original = spectral_map.copy()
+
+    image = spectrogram_to_sam_image(
+        spectral_map, transform=transform, percentiles=(0.0, 100.0)
+    )
+
+    assert image.dtype == np.uint8
+    assert image.shape == (2, 3, 3)
+    np.testing.assert_array_equal(image[..., 0], image[..., 1])
+    np.testing.assert_array_equal(image[..., 1], image[..., 2])
+    np.testing.assert_array_equal(spectral_map, original)
+
+
+def test_linear_and_log_transforms_produce_different_images():
+    spectral_map = np.array([[0.0, 1.0, 2.0], [4.0, 16.0, 64.0]])
+    linear = spectrogram_to_sam_image(
+        spectral_map, transform="linear", percentiles=(0.0, 100.0)
+    )
+    logarithmic = spectrogram_to_sam_image(
+        spectral_map, transform="log", percentiles=(0.0, 100.0)
+    )
+    assert not np.array_equal(linear, logarithmic)
+
+
+def test_invalid_image_transform_is_rejected():
+    with pytest.raises(ValueError, match="transform must be"):
+        spectrogram_to_sam_image(np.ones((2, 2)), transform="sqrt")
+
+
+@pytest.mark.parametrize("representation", ["stft", "msst"])
+def test_spectral_representation_validation_accepts_supported_values(representation):
+    assert validate_spectral_representation(representation) == representation
+
+
+def test_spectral_representation_validation_rejects_unknown_value():
+    with pytest.raises(ValueError, match="representation must be"):
+        validate_spectral_representation("cwt")
 
 
 @pytest.mark.parametrize("bad", [np.ones(4), np.array([[np.nan]])])
@@ -106,3 +158,139 @@ def test_wrapper_validates_inputs_without_loading_sam():
         segmenter.segment_points([[1, 2]], [2])
     with pytest.raises(ValueError, match="checkpoint"):
         SAMStructureSegmenter()
+
+
+class FakeAutomaticGenerator:
+    def generate(self, image):
+        mask = np.zeros(image.shape[:2], dtype=bool)
+        mask[1:3, 2:5] = True
+        return [{"segmentation": mask, "area": 6, "bbox": [2, 1, 3, 2],
+                 "predicted_iou": 0.91, "stability_score": 0.87,
+                 "point_coords": [[3, 2]], "crop_box": [0, 0, 5, 4],
+                 "custom": "preserved"}]
+
+
+def test_automatic_result_structure_and_geometric_features_without_sam():
+    segments = SAMAutomaticMaskSegmenter(generator=FakeAutomaticGenerator()).generate_masks(
+        np.zeros((4, 5, 3), dtype=np.uint8)
+    )
+    segment = segments[0]
+    assert isinstance(segment, SAMSegment)
+    assert (segment.segment_id, segment.area) == (1, 6)
+    assert segment.bbox == (2.0, 1.0, 3.0, 2.0)
+    assert (segment.temporal_width, segment.frequency_width) == (3, 2)
+    assert segment.centroid == pytest.approx((3.0, 1.5))
+    assert segment.image_fraction == pytest.approx(0.3)
+    assert segment.metadata["custom"] == "preserved"
+
+
+def test_automatic_segments_are_sorted_by_area_and_renumbered():
+    mask = np.ones((2, 3), dtype=bool)
+    annotations = [{"segmentation": mask, "area": area, "bbox": [0, 0, 3, 2]}
+                   for area in (2, 6, 4)]
+
+    class Generator:
+        def generate(self, image):
+            return annotations
+
+    segments = SAMAutomaticMaskSegmenter(generator=Generator()).generate_masks(
+        np.zeros((2, 3, 3), dtype=np.uint8)
+    )
+    assert [segment.area for segment in segments] == [6, 4, 2]
+    assert [segment.segment_id for segment in segments] == [1, 2, 3]
+
+
+@pytest.mark.parametrize("options, message", [
+    ({"points_per_side": 0}, "positive integer"),
+    ({"pred_iou_thresh": 1.1}, "between 0 and 1"),
+    ({"min_mask_region_area": -1}, "non-negative integer"),
+    ({"not_a_sam_option": 1}, "unknown"),
+])
+def test_automatic_mask_parameter_validation(options, message):
+    with pytest.raises(ValueError, match=message):
+        validate_automatic_mask_options(options)
+
+
+def test_automatic_mask_plot_uses_a_table_compatible_subplot():
+    image = np.zeros((4, 5, 3), dtype=np.uint8)
+    segment = SAMAutomaticMaskSegmenter(
+        generator=FakeAutomaticGenerator()
+    ).generate_masks(image)[0]
+
+    figure = plot_sam_automatic_masks(
+        np.zeros((4, 5), dtype=complex),
+        image,
+        [segment],
+        np.arange(5),
+        np.arange(4),
+        representation_name="MSST",
+    )
+
+    assert figure.data[-1].type == "table"
+    assert figure.data[-1].header.values[0] == "segment_id"
+    assert figure.layout.annotations[0].text.startswith("MSST originale")
+    assert "Image transform: log" in figure.layout.title.text
+
+
+def test_temporal_energy_contrast_keeps_permanent_component_near_one_and_finds_peak():
+    times = np.arange(9, dtype=float)
+    stft = np.full((2, 9), 2.0, dtype=complex)  # permanent energy = 4
+    stft[1, 4] = 8.0  # local energy = 64
+
+    contrast = temporal_energy_contrast(
+        stft, times, exclusion_seconds=0, neighborhood_seconds=3,
+        epsilon=1e-9, min_valid_references=2,
+    )
+
+    np.testing.assert_allclose(contrast[0], 1.0)
+    assert contrast[1, 4] == pytest.approx(16.0)
+
+
+def test_temporal_energy_contrast_handles_zero_and_missing_backgrounds():
+    stft = np.zeros((2, 5), dtype=complex)
+    stft[0, 2] = 2.0
+    stft[1, :] = np.nan
+    contrast = temporal_energy_contrast(
+        stft, np.arange(5), exclusion_seconds=0, neighborhood_seconds=2,
+        epsilon=0.5, min_valid_references=2,
+    )
+    assert contrast[0, 2] == pytest.approx(8.0)  # energy 4 / floor 0.5
+    assert np.isnan(contrast[1]).all()
+
+
+def test_contrast_point_selection_uses_physical_spacing_and_ignores_nan():
+    contrast = np.zeros((3, 5), dtype=float)
+    contrast[1, 1], contrast[1, 2], contrast[2, 4] = 9, 8, 7
+    contrast[0, 0] = np.nan
+    points = select_contrast_points(
+        contrast, np.array([0., 1., 3., 6., 10.]), np.array([5., 3., 0.]),
+        threshold=5, min_time_spacing_seconds=3,
+        min_frequency_spacing_hz=1, max_points=3,
+    )
+    assert [(p.time, p.frequency, p.contrast) for p in points] == [
+        (1.0, 3.0, 9.0), (10.0, 0.0, 7.0)
+    ]
+    assert points[0].pixel == pytest.approx((1.0, 1.0))
+
+
+def _guided_mask(point_index, mask, score):
+    result = type("Result", (), {})()
+    point = ContrastPoint(float(point_index), 1.0, 5.0, point_index, 0,
+                          (float(point_index), 0.0))
+    return GuidedSAMMask(point_index, point, 0, np.asarray(mask, dtype=bool),
+                         score, result)
+
+
+def test_guided_mask_deduplication_uses_mask_iou_and_records_origin():
+    first = _guided_mask(1, [[1, 1, 0], [0, 0, 0]], .9)
+    identical = _guided_mask(2, [[1, 1, 0], [0, 0, 0]], .8)
+    distinct = _guided_mask(3, [[0, 0, 0], [0, 1, 1]], .7)
+
+    kept, removed = deduplicate_guided_masks(
+        [distinct, identical, first], iou_threshold=.85
+    )
+
+    assert [item.point_index for item in kept] == [1, 3]
+    assert len(removed) == 1
+    assert (removed[0].removed_point_index, removed[0].kept_point_index) == (2, 1)
+    assert removed[0].iou == pytest.approx(1.0)
