@@ -4,7 +4,8 @@ from .devices import DeviceSelection, cuda_available, resolve_backend, resolve_d
 from .spectral import (GEOMETRIC_FEATURES, PHYSICAL_STFT_FEATURES, SpectralResult,
                        analyze_spectrum, validate_features)
 from .masks import Segment, containment, mask_iou, postprocess_masks
-from .features import FEATURE_MEANING, extract_segment_features, segments_to_dataframe
+from .features import (FEATURE_MEANING, SEGMENT_FEATURE_COLUMNS,
+                       extract_segment_features, segments_to_dataframe)
 from .preprocessing import FeaturePreprocessor, chronological_split
 from .models import AtypicalityModel, HDBSCANModel, load_artifact, save_artifact
 from .spot import SPOT
@@ -95,6 +96,7 @@ __all__ = [
     "resolve_backend", "resolve_device", "SpectralResult", "analyze_spectrum",
     "validate_features", "GEOMETRIC_FEATURES", "PHYSICAL_STFT_FEATURES", "Segment",
     "containment", "mask_iou", "postprocess_masks", "FEATURE_MEANING",
+    "SEGMENT_FEATURE_COLUMNS",
     "extract_segment_features", "segments_to_dataframe", "FeaturePreprocessor",
     "chronological_split", "AtypicalityModel", "HDBSCANModel", "save_artifact",
     "load_artifact", "SPOT", "ModelPipeline", "dataframe_to_segments", "train_models",

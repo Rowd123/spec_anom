@@ -95,6 +95,7 @@ sont ensuite recalculées à partir du masque final, et ne sont jamais moyennée
 ```bash
 python examples/spectral_analysis_usage.py --config configs/spectral_analysis.json
 python examples/sam_usage.py --spectral-config configs/spectral_analysis.json --sam-config configs/sam.json
+python examples/sam_spectral_usage.py --spectral-config configs/spectral_analysis.json --sam-config configs/sam.json --output sam_spectral_diagnostic.html
 python examples/pipeline_usage.py --spectral-config configs/spectral_analysis.json --sam-config configs/sam.json --models-config configs/models.json
 ```
 
@@ -125,6 +126,22 @@ lots ; aucun CSV intermédiaire n'est requis.
 
 SAM 2 demeure optionnel et aucun poids n'est téléchargé. Installer une version de
 PyTorch adaptée puis SAM 2 depuis son dépôt officiel et renseigner le checkpoint.
+
+### Référence STFT → SAM → caractéristiques
+
+`sam_spectral_usage.py` force localement la STFT et SAM automatique, construit une
+seule `SAMSegmentationSession`, puis affiche le signal, la STFT, l'image RGB exacte,
+les contours réels des masques bruts, les contours retenus et leur table. Par
+défaut la table décrit les masques SAM bruts ; `--postprocess` applique les options
+de fusion de `sam.json` et décrit alors les objets finaux.
+
+La table est volontairement limitée à `segment_id`, `time_frequency_area`,
+`duration`, `frequency_width`, `central_frequency`, `frequency_dispersion`,
+`integrated_spectral_power`, `mean_spectral_power_density`, `temporal_variation`,
+`frequency_variation` et `local_energy_contrast`. L'image uint8 sert uniquement à
+SAM : les quantités de puissance utilisent la PSD de la STFT complexe originale.
+Aucune orientation, cohérence, linéarité, significance, PCA ou caractéristique de
+tenseur de structure n'est calculée ou affichée par cet exemple.
 
 L'exemple spectral contient deux signaux : deux tons connus pour contrôler les
 fréquences, puis un ton permanent, une bouffée localisée et un chirp. Lorsque
