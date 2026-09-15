@@ -1,651 +1,122 @@
-# Spectral anomaly — STFT morphology with MSST comparison
+# spectral-anomaly
 
-This package provides quality-aware signal windowing, the historical causal
-energy detector, STFT/MSST transforms, and a first morphology prototype. STFT is
-the structural default; MSST remains available for controlled comparisons. Energy
-scoring remains available but is no longer required to select windows for the
-structural MSST path. Classification and clustering are intentionally out of
-scope for the prototype.
-
-## Optional SAM 2.1 spectrogram experiment
-
-`sam_segmentation.py` is a removable experiment parallel to the existing
-morphology path. It computes the **complex MSST representation**, converts its
-magnitude with `log1p`, clips at the 1st/99th percentiles, scales to uint8, and
-repeats the grayscale channel as RGB. It never consumes the local-normalization,
-significance, coherence, connected-component, or candidate-structure masks, and
-it makes no anomaly decision.
-
-SAM is intentionally not a mandatory package dependency. In a separate virtual
-environment, follow Meta's official installation approach:
-
-```bash
-# Install a CPU/CUDA PyTorch build suitable for the machine first:
-# https://pytorch.org/get-started/locally/
-python -m pip install 'git+https://github.com/facebookresearch/sam2.git'
-mkdir -p checkpoints
-wget -P checkpoints \
-  https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt
-```
-
-The application never downloads weights. All experiment parameters live in
-`examples/sam_structure_config.json`: analysis-window selection, MSST options,
-checkpoint, model config, automatic-mask options, and Plotly output. Choose
-`"auto"` (CUDA when available, otherwise CPU), `"cpu"`, `"cuda"`, or `"cuda:N"`.
-
-```bash
-python examples/sam_structure_usage.py
-python examples/sam_structure_usage.py --config path/to/my_sam_experiment.json
-```
-
-The small SAM 2.1 checkpoint uses
-`configs/sam2.1/sam2.1_hiera_s.yaml`. The experiment calls Meta's official
-`SAM2AutomaticMaskGenerator.generate(image)` API, without a user point or box.
-Each annotation becomes a `SAMSegment` retaining its mask, XYWH bounding box,
-predicted IoU, stability score, internal point coordinates, crop box, and extra
-metadata. These quality/stability values are segmentation metadata, not anomaly
-scores; this prototype makes no anomaly decision.
-
-`points_per_side` strongly affects proposal count and compute because its grid
-scales quadratically. `crop_n_layers` can sharply increase both runtime and mask
-count; `points_per_batch` mainly trades memory for throughput. Quality and NMS
-thresholds plus `min_mask_region_area` determine which proposals survive. The
-default leaves area filtering disabled. Plotly shows the original MSST, exact
-SAM grayscale RGB input, all segment IDs, their overlay, and a metadata table.
-Labels are capped visually when crowded, but masks are not silently removed.
-
-This prototype tests generic natural-image segmentation on spectrogram shapes.
-Weak boundaries and the domain gap may matter. CPU inference can be very slow;
-CUDA is selected automatically when available. Only one spectral window is run.
-
-### Segmentation STFT guidée par contraste énergétique
-
-Le même exemple propose désormais un mode `guided_segmentation`, en parallèle
-du générateur automatique. À partir de la STFT complexe originale, il calcule
-`E = |STFT|²`, puis, pour chaque fréquence, le fond médian aux temps vérifiant
-`exclusion_seconds < |u-t| <= neighborhood_seconds`. Les durées sont comparées
-à l'axe temporel réel : les bords ne bouclent pas, les références non finies sont
-ignorées et `min_valid_references` références sont exigées. Une valeur non
-calculable reste NaN et ne peut donc pas produire de point SAM.
-
-Le contraste est `E / max(B, epsilon)`. Pour l'essai, `epsilon=1e-12` dans les
-mêmes unités d'énergie que `|STFT|²`. Ce plancher doit être adapté au plancher de
-bruit physique des données : il empêche une division par zéro et évite qu'une
-estimation de fond numériquement négligeable crée un rapport arbitrairement
-grand. Il ne constitue ni un seuil d'anomalie ni une normalisation de l'image.
-L'image SAM reste produite une seule fois par `spectrogram_to_sam_image` et est
-strictement identique pour les modes automatique et guidé.
-
-Les paramètres documentés de la première passe sont : exclusion centrale 4 s,
-portée 24 s, au moins 6 références, contraste minimal 6, espacement minimal 4 s
-et 0,02 Hz, au plus 12 points. Les maxima locaux 8-voisins sont classés par
-contraste décroissant avant l'espacement physique. Chaque point positif donne
-une prédiction indépendante avec toutes ses variantes inspectables ; le masque
-au meilleur score d'IoU prédit par SAM est retenu, conformément à
-`SAMSegmentationResult.best_mask`. L'espacement des points est terminé avant la
-déduplication et n'en dépend pas.
-
-Les masques retenus sont ensuite classés par score SAM décroissant et comparés
-sur leurs pixels binaires réels. Un masque est supprimé dès que son IoU atteint
-`mask_iou_threshold=0.85` avec un masque déjà conservé. Le résultat brut reste
-disponible et chaque suppression conserve le point supprimé, le point gardé et
-l'IoU. Le rapport Plotly indique les nombres automatiques, guidés bruts et guidés
-dédupliqués, montre STFT et contraste avec les points, puis chaque masque dans
-un panneau séparé.
-
-Reproduction depuis la racine :
-
-```bash
-PYTHONPATH=src python examples/sam_structure_usage.py \
-  --config examples/sam_structure_config.json
-```
-
-Cette configuration utilise `representation="stft"`. Mettre
-`guided_segmentation.enabled` à `false` préserve le rapport automatique
-historique. SAM 2 et le checkpoint configuré restent des dépendances locales :
-le programme ne télécharge jamais de poids.
-
-## Pipeline architecture and energy dependency
-
-The historical path is:
+Pipeline modulaire de segmentation et d'analyse atypique de séries temporelles :
 
 ```text
-raw data -> quality preparation -> window energy -> causal median/MAD score
-         -> suspicious windows -> joined fixed periods -> MSST
+DataFrame → qualité/fenêtres → STFT ou MSST → image SAM
+          → SAM automatique ou guidé → fusion → caractéristiques
+          ├─ Isolation Forest → score d'atypicité → décision SPOT
+          └─ HDBSCAN → identifiant de cluster
 ```
 
-`detect_energy_anomalies` currently owns both quality preparation and energy
-scoring. Its `suspicious` column is consumed by `prepare_analysis_periods`, so
-that older MSST path is explicitly gated by energy. `analyze_msst_periods` and
-`msst_stft` themselves do not depend on energy: they only require complete
-regularly sampled arrays.
+## Architecture
 
-The morphology prototype adds a parallel, non-breaking path:
+Le cœur public est découpé par responsabilité : `energy.py` prépare les fenêtres,
+`spectral.py` fournit le contrat spectral commun, `segmentation.py` unifie les deux
+modes SAM, `masks.py` traite les recouvrements, `features.py` recalcule les
+caractéristiques finales, puis `preprocessing.py`, `models.py`, `spot.py` et
+`pipeline.py` composent les deux branches ML. Les anciens modules `msst.py` et
+`structure.py` restent accessibles pour les analyses historiques encore couvertes,
+mais ne forment plus un pipeline concurrent.
 
-```text
-raw data
-  -> prepare_analysis_windows (quality only)
-  -> STFT for every accepted window (MSST optional)
-  -> local robust normalization
-  -> structure tensor
-  -> significant connected components
-  -> descriptive window/component features
-  -> later: detection decision and unsupervised classification
-```
+Trois fichiers indépendants portent tous les hyperparamètres expérimentaux :
 
-Window acceptance in this path depends only on NaNs, quality flags, valid-sample
-requirements, and interpolation-gap limits. Neither energy nor the historical
-`suspicious` flag decides whether a spectral transform is run.
+* `configs/spectral_analysis.json` : échantillonnage, qualité, fenêtres, STFT/MSST,
+  PSD et device ;
+* `configs/sam.json` : modèle/image, mode automatique ou `energy_contrast`, prompts
+  et post-traitement ;
+* `configs/models.json` : listes de variables indépendantes, split chronologique,
+  Isolation Forest, SPOT, HDBSCAN et reproductibilité.
 
-### Prototype feature rationale
+## STFT, MSST et sens physique
 
-The deliberately small window-level feature set is intended for visual
-validation, not as a final anomaly score. In particular, **coherent structure is
-not synonymous with anomaly**: nominal signals may contain persistent coherent
-bands. Coherence and significance help segment and describe objects; only a
-later model of historically observed component families can assess novelty.
+`analyze_spectrum` retourne toujours `SpectralResult`. `values` est la carte
+sélectionnée pour la segmentation ; `stft` et `psd` sont conservées en parallèle.
+Ainsi un masque MSST fournit légitimement sa géométrie/morphologie, mais
+`integrated_energy`, `mean_energy_density`, `central_frequency`,
+`frequency_dispersion` et `local_energy_contrast` sont évaluées sur la PSD STFT
+alignée, jamais sur une pseudo-énergie MSST. Durée, largeur, aire et variations de
+forme dépendent seulement du masque et des axes physiques. `FEATURE_MEANING` rend
+cette distinction inspectable.
 
-| Feature | Geometric meaning | Expected noise/structure behavior |
-|---|---|---|
-| `weighted_mean_coherence` | Tensor anisotropy averaged with local significance weights | Lower for diffuse isotropic texture; higher along locally organized shapes |
-| `coherence_q90` | Upper tail of coherence among locally significant pixels | Shows whether at least part of the map is strongly organized |
-| `coherent_pixel_fraction` | Map fraction retained by both significance and coherence criteria | Small isolated noise responses contribute little; persistent shapes occupy more support |
-| `orientation_dispersion` | Axial circular dispersion, invariant under a 180° reversal | Low for a regular local direction, higher for random directions; orientation itself is not scored as good or bad |
-| `component_count` | Number of connected significant coherent regions | Separates absent/fragmented support from one or more organized objects |
-| `largest_component_area_fraction` | Relative support of the largest object | Rewards spatial persistence without using absolute MSST amplitude |
-| `largest_component_significance_fraction` | Share of local significance carried by the largest object | Measures concentration relative to the locally estimated background |
+### Convention de tramage et axes
 
-Every component also reports pixel area, integrated local significance, duration
-in seconds, bandwidth in hertz, bounding box, dimensionless normalized aspect
-ratio, PCA orientation, and PCA linearity. Duration and bandwidth are kept in
-their own physical units; PCA coordinates are normalized by the complete map
-extent before axes are combined.
+Le tramage est défini par le projet avant tout appel FFT, et non par NumPy,
+Torch ou ssqueezepy. Avec `center=true`, les centres sont les échantillons
+`0, hop_length, 2 hop_length, ...` strictement antérieurs à la fin du signal ;
+la fenêtre est complétée à gauche et à droite selon `padtype`. Avec
+`center=false`, seules les fenêtres entièrement contenues sont produites et le
+temps publié est leur centre géométrique
+`(start + (window_length - 1) / 2) / sampling_frequency`. CPU et GPU reçoivent
+donc exactement les mêmes trames pondérées et retournent la même géométrie.
+`center` ne retire jamais la moyenne : cette opération est contrôlée uniquement
+par `signal_preprocessing.remove_mean`.
 
-### Important prototype parameters
+L'axe fréquentiel est `rfftfreq(n_fft, 1/fs)`. Augmenter `n_fft` densifie cette
+grille par zero-padding mais n'améliore pas à lui seul la résolution physique,
+qui dépend surtout de `window_length`, de la fenêtre et de la durée observée.
 
-The parameters most likely to require calibration are the frequency/time size of
-`normalization_neighborhood`, tensor smoothing scales `tensor_sigma`, local
-`significance_threshold`, `coherence_threshold`, and
-`minimum_component_area`. They interact with STFT `window_length`, `hop_length`,
-frequency resolution, window duration, and expected structure thickness. The
-normalization neighborhood must be wider than a typical structure but smaller
-than background variation. Tensor smoothing must suppress pixel noise without
-merging nearby shapes. Thresholds should eventually be calibrated on background
-recordings rather than interpreted as a universal classifier.
+### Convention PSD
 
-The normalization is a running 2-D median/MAD of the selected spectral magnitude
-and therefore does
-not assume a single global noise level or white stationary noise. The structure
-tensor is evaluated in dimensionless local scale coordinates, making its
-coherence orientation-neutral. Connected components use 8-connectivity and do
-not assume a single-valued ridge `f(t)`, so vertical and multi-frequency shapes
-remain representable. Skeleton, curvature, loops, branch counts, HDBSCAN, and a
-final decision rule are intentionally deferred until these maps and basic
-features have been validated visually.
+La STFT est le FFT brut des trames pondérées. Pour `scaling=density` et un signal
+réel unilatéral, la PSD vaut `|X|² / (fs × sum(w²))` pour DC et Nyquist, et le
+double pour les bins intérieurs positifs. Son unité est donc l'unité du signal
+au carré par hertz et son intégrale fréquentielle respecte Parseval pour chaque
+trame. Les seules options actuellement acceptées sont `density` et
+`one_sided=true`; toute autre valeur provoque une erreur explicite.
 
-`minimum_component_area` defaults to 1: small components are retained as data,
-not silently declared to be noise. Raising it is an explicit exploratory
-segmentation choice whose effect should be reported.
+## GPU sans faux accélérateur
 
-### Structural prototype usage
+Les devices spectraux acceptent `auto`, `cpu`, `cuda` ou `cuda:N`. La STFT CUDA
+utilise réellement `torch.stft` et conserve les tenseurs sur GPU jusqu'au résultat ;
+la MSST actuelle (réassignation sur la grille STFT, accélérée par Numba) est explicitement CPU et
+`auto` retombe donc sur CPU. Demander CUDA pour MSST produit une erreur plutôt que
+de simuler une accélération. SAM utilise le device du modèle PyTorch.
 
-```python
-from spectral_anomaly import analyze_structural_windows, plot_structural_window
+Les modèles acceptent `backend=auto|cpu|gpu`. CPU utilise scikit-learn ; GPU utilise
+les implémentations cuML d'Isolation Forest et HDBSCAN. `auto` choisit cuML seulement
+si cuML **et** CUDA sont disponibles, sinon CPU. SPOT reste sur CPU. Ces backends
+partagent les contrats NumPy `score`/`cluster_id`. `cluster_id == -1` n'est pas une
+décision d'anomalie ; `predicted_iou` et `stability_score` restent des métadonnées
+SAM ; le score atypique et le booléen SPOT sont deux colonnes distinctes.
 
-metadata, analyses = analyze_structural_windows(
-    frame,
-    value_col="value",
-    sampling_frequency=1.0,
-    sampling_period="1s",
-    window_size=256,
-    overlap=128,
-    representation="stft",  # default; use "msst" only for comparison
-    transform_options={"window_length": 128, "n_fft": 256, "hop_length": 4},
-)
+## Fusion auditable
 
-# All quality-valid windows are present, regardless of their energy score.
-window_id = next(iter(analyses))
-item = analyses[window_id]
-print(item.features)
-print(item.components)
-plot_structural_window(item).write_html("stft_structure_window.html")
-```
+Le post-traitement construit un graphe non orienté : deux masques sont reliés si
+leur IoU dépasse `iou_threshold`, ou si le critère optionnel de containment
+`|A∩B|/min(|A|,|B|)` dépasse son seuil. Chaque composante connexe est un groupe :
+`A↔B` et `B↔C` produit donc `{A,B,C}`, indépendamment de l'ordre. `merge` calcule
+l'union pixel à pixel ; `deduplicate` garde le plus grand support. Chaque résultat
+conserve `source_segment_ids`, `merge_count` et les liens/IoU. Les caractéristiques
+sont ensuite recalculées à partir du masque final, et ne sont jamais moyennées.
 
-The six panels show the time signal, the selected raw representation, its local
-normalization, structure coherence, retained components with their IDs, and a
-component feature table. `representation="stft"` is the default; pass `"msst"`
-explicitly for the experimental alternative. Run the full example with
-`python examples/structure_usage.py`.
-
-### Component population for a future normal-structure model
-
-`analyze_structural_components` returns `(metadata, analyses, components)`, where
-`components` has one row per `(window_id, component_id)`. It includes frequency
-centroid/min/max, relative time centroid, duration, bandwidth, area, mean/max/
-integrated local significance, mean/median/q90 coherence, normalized aspect
-ratio, linearity, the interpretable raw orientation, and the clustering-safe
-axial encoding `cos(2 theta)`, `sin(2 theta)`.
-
-```python
-from spectral_anomaly import (
-    analyze_structural_components,
-    component_features,
-    fit_component_feature_scaler,
-    transform_component_features,
-)
-
-metadata, analyses, components = analyze_structural_components(
-    frame,
-    value_col="value",
-    sampling_frequency=1.0,
-    sampling_period="1s",
-    window_size=256,
-)
-
-# Identification columns and the raw angle are excluded from X automatically.
-X = component_features(components)
-scaler = fit_component_feature_scaler(components)
-X_scaled = transform_component_features(components, scaler)
-```
-
-The scaler applies `log1p` by default to non-negative, typically right-skewed
-size/intensity variables (area, duration, bandwidth, significance and aspect
-ratio), then fits a per-column median and `1.4826 * MAD`. Frequency positions,
-relative time, coherence, linearity, and axial orientation coordinates are not
-log-transformed. Constant training columns receive scale 1 rather than creating
-NaNs. The fitted scaler is reusable on later windows; no labels, clusters, or
-anomaly decisions are produced.
-
-Some candidate features are intentionally redundant: frequency min/max overlap
-with centroid and bandwidth; area overlaps with duration, bandwidth and aspect
-ratio; mean/max/integrated significance are related; and mean/median/q90
-coherence summarize the same distribution. Before clustering, correlation and
-stability analyses should select a smaller subset to avoid overweighting one
-physical property merely because it has several correlated columns.
-
-Segmentation still depends strongly on neighborhood size, tensor scale,
-significance/coherence thresholds, STFT resolution and minimum area. Components
-can split, merge, or disappear when these change, and overlapping physical
-phenomena can become a single connected object. Before trying HDBSCAN on real
-data, validate repeatability across nominal recordings, operating regimes,
-signal-to-noise ratios and nearby parameter values; check feature stability and
-missing frequency bands; fit scaling on training periods only; and quantify how
-often each learned family occurs per window. A future cluster label `-1` must
-mean only “not assigned to a dense learned family,” never automatic physical
-anomaly.
-
-### From connected fragments to candidate structures
-
-A connected component is a segmentation object, not necessarily one physical
-occurrence. `associate_component_fragments` builds an undirected graph whose
-nodes are the original components. An edge is added only when all four physical
-criteria pass: temporal gap, frequency-interval gap, frequency-centroid
-difference, and axial orientation difference. Connected graph groups become
-`CandidateStructure` objects; original component masks and IDs are never
-discarded.
-
-The four experimental controls are:
-
-* `max_fragment_time_gap_seconds`;
-* `max_fragment_frequency_gap_hz`;
-* `max_fragment_frequency_centroid_difference_hz`;
-* `max_fragment_orientation_difference_radians`.
-
-Their defaults are deliberately conservative: all distance tolerances are zero,
-apart from a 10-degree orientation tolerance. Useful values depend on STFT time/
-frequency resolution and on the physical process, so real-data examples pass
-explicit values. Association is transitive: if C1--C2 and C2--C3 pass, all three
-form one candidate even when C1--C3 does not. This repairs short interruptions
-but can also chain two distinct occurrences through intermediate fragments.
-False merges remain possible for two nearby parallel occurrences with overlapping
-frequency support, at crossings where local orientation is unstable, for broad
-bands whose centroids happen to agree, or through a long transitive chain of
-individually acceptable gaps. Conversely, frequency drift or a noisy PCA angle
-can prevent a legitimate merge. The association is intentionally confined to
-one window and does not join objects across window boundaries.
-
-Candidate features are recomputed from the union of the retained pixels, never
-by averaging component rows. Alongside component geometry/significance/
-coherence, candidates expose `fragment_count`, `time_span_seconds`,
-`active_duration_seconds`, `total_gap_duration_seconds`,
-`maximum_gap_duration_seconds`, and `gap_fraction`. Thus a continuous band and a
-fragmented band with the same outer span remain distinguishable.
-
-`support_bandwidth_hz` means occupied frequency-bin count times frequency
-resolution; it is therefore one `delta_f` for a one-bin object.
-`frequency_span_hz` means `frequency_max - frequency_min` and is zero for that
-same object. Legacy `bandwidth_hz` remains an alias of support bandwidth.
-Likewise, candidate `time_span_seconds` includes the full bin support between
-outer edges, whereas `active_duration_seconds` counts only time columns holding
-candidate pixels.
-
-```python
-from spectral_anomaly import analyze_candidate_structures, plot_candidate_structures
-
-metadata, results, components_df, candidates_df = analyze_candidate_structures(
-    frame,
-    value_col="value",
-    sampling_frequency=1.0,
-    sampling_period="1s",
-    window_size=256,
-    window_ids=[0],
-    association_options={
-        "max_fragment_time_gap_seconds": 8.0,
-        "max_fragment_frequency_gap_hz": 0.01,
-        "max_fragment_frequency_centroid_difference_hz": 0.02,
-        "max_fragment_orientation_difference_radians": 0.26,
-    },
-)
-print(components_df)
-print(candidates_df)
-plot_candidate_structures(results[0]).write_html("stft_candidates_window_0.html")
-```
-
-The candidate diagnostic keeps the original component IDs (`C1`, `C2`, ...)
-beside candidate IDs (`S1`, `S2`, ...), plus both DataFrames for auditing. These
-objects are neither normal nor anomalous at this stage. This local association
-reconstructs occurrences within a window; future HDBSCAN-style work would group
-similar candidates across many windows and is a separate problem.
-
-## Controlled STFT versus MSST comparison
-
-The morphology chain is representation-independent: `extract_spectral_structure`
-selects either `abs(result.stft)` or `abs(result.msst)`, then applies the exact
-same normalization, tensor, thresholds, connected components, and aggregation.
-Use `representation="stft"` or `representation="msst"` with
-`analyze_structural_windows`. The STFT-only choice calls `analyze_stft_periods`
-and skips instantaneous-frequency estimation and synchrosqueezing entirely.
-
-For a paired experiment on identical windows, use:
-
-```python
-from spectral_anomaly import (
-    compare_structural_windows,
-    plot_stft_msst_comparison,
-)
-
-metadata, comparisons = compare_structural_windows(
-    frame,
-    value_col="value",
-    sampling_frequency=1.0,
-    sampling_period="1s",
-    window_size=256,
-    overlap=128,
-    window_ids=[0],
-    transform_options={"window_length": 128, "n_fft": 256, "hop_length": 4},
-    structure_options={"small_component_area": 16},
-)
-comparison = comparisons[0]
-print(comparison.metrics)
-plot_stft_msst_comparison(comparison).write_html(
-    "stft_msst_comparison_window_0.html"
-)
-```
-
-`comparison.stft` and `comparison.msst` each expose the raw and normalized
-representation, coherence and orientation maps, masks, labels, components, and
-features. `comparison.metrics` has `stft`, `msst`, and `msst_minus_stft` columns.
-In addition to the original features it reports median and maximum component
-area plus `small_component_fraction`, where “small” means an area no greater
-than the configurable `small_component_area`.
-
-The nine-panel diagnostic aligns signal, raw maps, normalized maps, coherence
-maps, and component overlays on the same time/frequency axes. Normalized maps
-share a 0–12 color range and coherence maps share 0–1. Raw STFT and MSST retain
-separate color scaling because their coefficient units differ after
-reassignment; forcing one raw scale would make the visual comparison misleading.
-
-Run the real-data example with:
+## Exemples
 
 ```bash
-python examples/compare_stft_msst.py --window-id 0
+python examples/spectral_analysis_usage.py --config configs/spectral_analysis.json
+python examples/sam_usage.py --spectral-config configs/spectral_analysis.json --sam-config configs/sam.json
+python examples/pipeline_usage.py --spectral-config configs/spectral_analysis.json --sam-config configs/sam.json --models-config configs/models.json
 ```
 
-The deterministic synthetic experiment currently shows that the default
-prototype parameters retain several small MSST components even for noise, while
-STFT often retains none and does retain larger regions for the brief impulse.
-This is evidence that the fragmentation concern is measurable, not a conclusion
-that STFT is superior: the same thresholds were initially selected around MSST,
-and the weak-tone STFT is also rejected. The next experiment should compare
-background/structure distributions across recordings and calibrate thresholds
-per representation before choosing STFT, MSST, or both.
+Le diagnostic SAM utilise par défaut un générateur simulé reproductible afin de
+fonctionner sans checkpoint ; ajouter `--real-sam` active SAM 2 local. Il affiche
+la représentation, l'image exacte, les IDs avant/après et les liens de fusion.
+Le pipeline réel `dataframe_to_segments` accepte directement un DataFrame et ses
+adaptateurs SAM peuvent également être injectés dans les tests ou traitements par
+lots ; aucun CSV intermédiaire n'est requis.
 
-## Algorithmic choices
+SAM 2 demeure optionnel et aucun poids n'est téléchargé. Installer une version de
+PyTorch adaptée puis SAM 2 depuis son dépôt officiel et renseigner le checkpoint.
 
-1. Duplicates are sorted and reduced with an explicit “keep first” policy.
-2. The nominal period is the median positive adjacent difference. This is robust
-   to occasional missing timestamps, but assumes over half of adjacent gaps are
-   nominal. Pass `sampling_period` when that assumption is false. Samples must be
-   exactly on the resulting grid: the detector deliberately never snaps a nearby
-   measurement to a grid position.
-3. Invalid quality flags and NaNs become unobserved positions. Exact `reindex`
-   preserves separate observed and interpolated masks.
-4. Only complete, internally bounded gaps of at most `max_interpolation_gap` are
-   linearly interpolated. A long run is never partially filled, so windows at its
-   edges are rejected as well. Interpolation is convenient but changes spectral
-   content (typically attenuating high frequencies); keep this limit conservative.
-5. The original signal values are not centred or otherwise changed for the energy
-   calculation: they are only multiplied by the selected Fourier taper. Energy is
-   computed from the one-sided real FFT with Parseval weights and normalised by
-   the taper energy. By default, the complete contribution assigned to Fourier
-   bin 0 is subtracted before comparison with history (`exclude_dc_bin=True`). A
-   centred copy is still returned for optional plotting, but is not used by the
-   FFT or the anomaly score. The result also exposes
-   `energy_including_dc` and `dc_bin_energy` for auditing. Excluding bin 0 removes
-   exactly that discrete bin—not a configurable set of low-frequency bins. Set
-   `exclude_dc_bin=False` to include it. Because tapering spreads a constant or
-   slow trend beyond bin 0, this is deliberately not equivalent to detrending;
-   keep the taper fixed when comparing windows.
-6. A causal median/MAD baseline uses only earlier accepted windows. The default
-   excludes detected anomalies from history to limit contamination. During warmup
-   (`min_history` points), scores remain unavailable. A relative machine-epsilon
-   scale floor handles zero MAD: an energy equal to the baseline scores zero, while
-   a different energy gets a finite, possibly very large score.
+L'exemple spectral contient deux signaux : deux tons connus pour contrôler les
+fréquences, puis un ton permanent, une bouffée localisée et un chirp. Lorsque
+`visualization.compare_representations=true`, il calcule directement STFT et
+MSST avec `analyze_spectrum` sur les mêmes fenêtres et vérifie l'égalité exacte
+de leurs axes avant de tracer les deux cartes. L'ancien exemple morphologique
+`compare_stft_msst.py` reste séparé et ne participe pas à cette comparaison.
 
-```python
-from spectral_anomaly import (
-    detect_energy_anomalies,
-    plot_suspicious_windows,
-    plot_window,
-)
-
-result, windows = detect_energy_anomalies(
-    frame, value_col="value", quality_col="quality",
-    valid_quality_flags={"good"}, sampling_period="1s",
-    window_size=256, overlap=128, exclude_dc_bin=True,
-)
-anomalies = result[result["suspicious"]]
-if not anomalies.empty:
-    # Plot one selected anomaly.
-    one_figure = plot_window(anomalies.index[0], result, windows)
-    one_figure.show()
-
-    # Or plot all anomaly windows in a single interactive figure.
-    figure = plot_suspicious_windows(result, windows)
-    figure.write_html("all_anomaly_windows.html")
-```
-
-## Complete runnable example
-
-Install the project and run the example from the repository root:
+## Tests
 
 ```bash
-python -m pip install -e .
-python examples/basic_usage.py
+python -m pytest
 ```
-
-The example creates a reproducible signal with a slowly drifting mean, missing
-timestamps, NaNs, an invalid quality flag, a duplicate timestamp, and one
-artificial energy anomaly. It prints the window metadata and writes all suspicious
-windows as separate interactive subplots in `energy_anomaly_windows.html`. Use
-`--show` to display the figure interactively or
-`--output path/to/figure.html` to select another output.
-
-The complete source is available in [`examples/basic_usage.py`](examples/basic_usage.py).
-
-## Fixed-period SSQ-STFT/MSST analysis
-
-The second stage groups anomalous windows whose grid intervals overlap or touch.
-Starting at the first anomalous sample, each group is extended **forward** with
-samples from subsequent accepted windows until `period_size` is reached. A group
-is excluded, with an explicit reason in `period_metadata`, when it is already
-longer than `period_size` or when there is not enough complete data after it.
-
-```python
-from spectral_anomaly import (
-    analyze_msst_periods,
-    plot_msst_periods,
-    prepare_analysis_periods,
-)
-
-period_metadata, periods = prepare_analysis_periods(
-    result,
-    windows,
-    period_size=1024,
-)
-analyses = analyze_msst_periods(
-    periods,
-    sampling_frequency=1.0,  # Hz; reciprocal of the 1-second sampling period
-    iteration_count=3,
-    window="hann",
-    n_fft=256,
-    window_length=128,
-    hop_length=4,
-)
-if analyses:
-    figure = plot_msst_periods(analyses)
-    figure.write_html("msst_analysis_periods.html")
-```
-
-The interactive Plotly figure has one row per studied period: the fixed-length
-time signal, its STFT, and its iterative multisynchrosqueezed representation.
-Hovering reveals exact time, frequency, and magnitude values. Zooming and panning
-remain linked to each individual subplot. The red signal points show
-the extent covered by the original consecutive anomalous windows. This stage only
-computes and plots representations; it does not yet confirm anomalies or extract
-clustering features.
-
-To preprocess raw data, obtain a single transformation over the **entire
-monitoring period**, and save its interactive visualization in one call, use
-`analyze_msst_monitoring_data`:
-
-```python
-from spectral_anomaly import analyze_msst_monitoring_data
-
-full_analysis, figure = analyze_msst_monitoring_data(
-    frame,
-    value_col="value",
-    quality_col="quality",
-    valid_quality_flags={"good"},
-    sampling_period="1s",
-    sampling_frequency=1.0,
-    max_interpolation_gap=3,
-    iteration_count=3,
-    window="hann",
-    n_fft=256,
-    window_length=128,
-    hop_length=4,
-    output_html="msst_full_monitoring_period.html",
-)
-full_period_msst = full_analysis.msst
-```
-
-Here, `sampling_period="1s"` describes the spacing of the input samples, while
-`sampling_frequency=1.0` gives the same rate in hertz to the MSST. The returned
-`full_analysis.msst` is the MSST matrix, `full_analysis.stft` is the original
-STFT, and `figure` is the Plotly object. The HTML file is written automatically
-to the path passed as `output_html`.
-
-The function applies the detector's timestamp de-duplication, quality masking,
-regular-grid construction, and bounded interpolation rules before passing the
-complete sequence to MSST. It returns both the numerical `MSSTResult` and the
-Plotly figure, and writes a self-contained HTML file to `output_html`. Since MSST
-requires a finite signal, the function explicitly rejects a monitoring period
-containing a missing run longer than `max_interpolation_gap`.
-
-When preprocessing and energy detection have already been run, the lower-level
-`analyze_msst_monitoring_period(result, windows, ...)` remains available for
-assembling overlapping accepted windows without processing the raw frame again.
-
-A complete executable example is provided in
-[`examples/full_monitoring_msst_usage.py`](examples/full_monitoring_msst_usage.py).
-After installing the package, run it from the repository root:
-
-```bash
-python examples/full_monitoring_msst_usage.py
-```
-
-To select the output file or also open the interactive figure:
-
-```bash
-python examples/full_monitoring_msst_usage.py \
-    --output reports/full_monitoring_msst.html \
-    --show
-```
-
-Run the complete example with:
-
-```bash
-python examples/msst_usage.py
-```
-
-### Using suspicious windows in the next pipeline stage
-
-The result index is the key of the separate `windows` dictionary. Therefore no
-NumPy arrays are stored inside DataFrame cells:
-
-```python
-for window_id in result.index[result["suspicious"]]:
-    item = windows[window_id]
-    regularly_sampled_signal = item.signal
-    regularly_sampled_time = item.time
-    genuinely_observed = item.observed_mask
-    interpolated = item.interpolated_mask
-
-    # Later: send regularly_sampled_signal to the MSST implementation.
-```
-# Diagnostic ciblé SAM 2 (bande 45–47 s)
-
-Le script `examples/sam_band_diagnostic.py` isole le diagnostic de segmentation :
-il relit les tableaux numériques du dernier appel `Plotly.newPlot` de
-`sam_automatic_masks.html` (ou un fichier NPZ extrait auparavant), sans capture
-d'écran, recomposition du signal, extraction de caractéristiques ou détection
-d'anomalie. Il réutilise exactement l'image RGB uint8 et ses axes pour :
-
-1. convertir le point physique avec `time_frequency_to_pixel`, afficher son
-   aller-retour et l'intensité de son voisinage ;
-2. conserver et afficher séparément **toutes** les propositions du point positif
-   (`multimask_output=True`) et leurs scores ;
-3. faire de même avec une boîte optionnelle ;
-4. exécuter le générateur automatique avec le même objet modèle et afficher
-   chacun de ses masques dans un panneau distinct ;
-5. observer le point de grille automatique le plus proche et ses propositions
-   brutes (score, aire, couverture du point diagnostiqué), puis les nombres de
-   propositions après le seuil d'IoU,
-   après le seuil de stabilité et aux entrées/sorties de NMS. Les fonctions du
-   module SAM installé sont temporairement enveloppées puis restaurées ; aucun
-   fichier de la bibliothèque n'est modifié. Ces compteurs servent à localiser
-   une suppression, mais l'appartenance d'une proposition précise à la bande
-   doit être confirmée visuellement avant d'attribuer la cause à un filtre.
-
-Depuis la racine du dépôt :
-
-```bash
-python examples/sam_band_diagnostic.py \
-  --config examples/sam_band_diagnostic_config.json
-```
-
-Les paramètres `point.time` et `point.frequency` règlent le point. Les quatre
-limites de `box` règlent la boîte et `box.enabled` permet de la désactiver.
-`input_html` désigne le HTML original ; `input_npz` peut à la place désigner la
-copie exacte écrite par `save_extracted_npz`. Les sections `sam` et
-`automatic_mask_generation` doivent reprendre le checkpoint, la configuration
-du modèle et les seuils de l'essai original. `output_html` règle la visualisation
-Plotly. Au survol d'un panneau de masque, chaque pixel est explicitement décrit
-par « masque » ou « aucun masque ».
-
-Si le HTML manque, le script s'arrête avant toute approximation. Si le
-checkpoint ou SAM 2 manque, l'extraction, la validation des axes et du point
-sont distinguées de l'inférence non exécutée dans le message d'erreur. Les
-valeurs par défaut de temps/fréquence et de boîte sont des paramètres de départ :
-la fréquence doit être ajustée à la bande visible dans l'entrée exacte.
