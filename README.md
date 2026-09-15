@@ -98,9 +98,27 @@ python examples/sam_usage.py --spectral-config configs/spectral_analysis.json --
 python examples/pipeline_usage.py --spectral-config configs/spectral_analysis.json --sam-config configs/sam.json --models-config configs/models.json
 ```
 
-Le diagnostic SAM utilise par défaut un générateur simulé reproductible afin de
-fonctionner sans checkpoint ; ajouter `--real-sam` active SAM 2 local. Il affiche
-la représentation, l'image exacte, les IDs avant/après et les liens de fusion.
+`sam_usage.py` exécute réellement SAM 2 avec le checkpoint, la configuration de
+modèle et le device déclarés dans `configs/sam.json`. Il montre le signal riche
+(ton permanent, bouffée et chirp), la représentation, l'image RGB exacte, tous
+les contours bruts sans addition d'identifiants, les masques individuels, leurs
+métadonnées et le résultat du post-traitement. Le device effectivement choisi est
+affiché. Le modèle/générateur est construit une fois dans une
+`SAMSegmentationSession`, puis réutilisable pour toutes les fenêtres. Le diagnostic
+synthétique de fusion, qui ne prétend pas évaluer SAM, est désormais isolé dans
+`examples/mask_merge_diagnostic.py`.
+
+La conversion en image applique `abs`, `log1p` (ou `linear`), les percentiles et
+la mise à l'échelle uint8 **indépendamment pour chaque fenêtre**, puis répète le
+gris sur trois canaux. Une fenêtre physiquement peu énergétique peut donc sembler
+visuellement contrastée : cette image n'est pas une calibration énergétique.
+
+Trois IoU distinctes ne doivent pas être confondues : `predicted_iou` est
+l'estimation de qualité interne à SAM et non un recouvrement entre deux objets ;
+`energy_contrast.mask_iou_threshold` déduplique les masques issus de prompts
+guidés différents ; `mask_postprocessing.iou_threshold` relie ensuite les objets
+dans le graphe de fusion. Les liens du graphe, leur IoU et leur containment sont
+conservés avec les métadonnées complètes des segments SAM sources.
 Le pipeline réel `dataframe_to_segments` accepte directement un DataFrame et ses
 adaptateurs SAM peuvent également être injectés dans les tests ou traitements par
 lots ; aucun CSV intermédiaire n'est requis.

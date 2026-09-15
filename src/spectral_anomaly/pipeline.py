@@ -8,7 +8,7 @@ from .features import segments_to_dataframe
 from .masks import postprocess_masks
 from .models import AtypicalityModel, HDBSCANModel
 from .preprocessing import FeaturePreprocessor, chronological_split
-from .segmentation import segment_spectrum
+from .segmentation import SAMSegmentationSession
 from .spectral import analyze_spectrum, validate_features
 from .spot import SPOT
 
@@ -18,15 +18,22 @@ def dataframe_to_segments(frame, spectral_config, sam_config, *, value_col="valu
       sampling_period=spectral_config["sampling_period"], window_size=w["size"],overlap=w["overlap"],
       min_valid_ratio=q["min_valid_fraction"],max_interpolation_gap=q["max_interpolation_gap"],
       quality_col=q.get("quality_column"),valid_quality_flags=q.get("valid_flags"))
+    # The expensive SAM model/generator is constructed exactly once and reused.
+    session = SAMSegmentationSession(
+      sam_config, automatic_segmenter=automatic_segmenter, predictor=predictor)
     rows=[]; diagnostics=[]
     for window_id,item in windows.items():
         # Mean removal is owned explicitly by analyze_spectrum's configuration.
         spectrum=analyze_spectrum(item.signal,spectral_config)
-        image,raw,points=segment_spectrum(spectrum,sam_config,automatic_segmenter=automatic_segmenter,predictor=predictor)
-        final=postprocess_masks(raw,**sam_config["mask_postprocessing"])
+        segmentation=session.segment(spectrum)
+        final=postprocess_masks(segmentation.segments,**sam_config["mask_postprocessing"])
         start=metadata.loc[window_id,"start_time"] if "start_time" in metadata else window_id
         rows.append(segments_to_dataframe(final,spectrum,window_id=window_id,window_start=start))
-        diagnostics.append({"window_id":window_id,"spectral":spectrum,"sam_image":image,"raw_segments":raw,"segments":final,"points":points})
+        diagnostics.append({"window_id":window_id,"spectral":spectrum,
+          "sam_image":segmentation.image,"raw_segments":segmentation.raw_segments,
+          "raw_sam_segments":segmentation.raw_sam_segments,"segments":final,
+          "points":segmentation.points,"contrast":segmentation.contrast,
+          "guided":segmentation.guided,"sam_device":session.device})
     return (pd.concat(rows,ignore_index=True) if rows else pd.DataFrame()), diagnostics
 
 @dataclass

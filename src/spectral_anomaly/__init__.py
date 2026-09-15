@@ -9,7 +9,7 @@ from .preprocessing import FeaturePreprocessor, chronological_split
 from .models import AtypicalityModel, HDBSCANModel, load_artifact, save_artifact
 from .spot import SPOT
 from .pipeline import ModelPipeline, dataframe_to_segments, train_models
-from .segmentation import segment_spectrum
+from .segmentation import SAMSegmentationSession, SpectrumSegmentation, segment_spectrum
 
 from .energy import (
     WindowData,
@@ -47,6 +47,7 @@ from .sam_segmentation import (
     deduplicate_guided_masks,
     pixel_to_time_frequency,
     plot_sam_automatic_masks,
+    plot_sam_diagnostic,
     plot_sam_segmentation,
     plot_sam_guided_comparison,
     segment_contrast_points,
@@ -97,7 +98,7 @@ __all__ = [
     "extract_segment_features", "segments_to_dataframe", "FeaturePreprocessor",
     "chronological_split", "AtypicalityModel", "HDBSCANModel", "save_artifact",
     "load_artifact", "SPOT", "ModelPipeline", "dataframe_to_segments", "train_models",
-    "segment_spectrum",
+    "SAMSegmentationSession", "SpectrumSegmentation", "segment_spectrum",
     "COMPONENT_FEATURE_COLUMNS",
     "DEFAULT_LOG1P_FEATURES",
     "CandidateStructure",
@@ -134,6 +135,7 @@ __all__ = [
     "deduplicate_guided_masks",
     "pixel_to_time_frequency",
     "plot_sam_automatic_masks",
+    "plot_sam_diagnostic",
     "plot_sam_segmentation",
     "plot_sam_guided_comparison",
     "segment_contrast_points",

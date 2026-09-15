@@ -64,8 +64,32 @@ def validate_config(data: Mapping[str, Any], kind: str) -> dict[str, Any]:
             raise ValueError("compare_representations must be boolean")
     elif kind == "sam":
         if result["segmentation_mode"] not in {"automatic", "energy_contrast"}: raise ValueError("invalid segmentation_mode")
+        if set(result["model"]) != {"checkpoint", "config"}:
+            raise ValueError("SAM model must contain checkpoint and config")
+        if result["device"] not in {"auto", "cpu", "cuda"} and not (
+                isinstance(result["device"], str) and result["device"].startswith("cuda:")
+                and result["device"][5:].isdigit()):
+            raise ValueError("SAM device must be auto, cpu, cuda, or cuda:N")
+        image = result["image"]
+        if set(image) != {"transform", "percentiles", "epsilon"}:
+            raise ValueError("SAM image configuration has missing or unknown keys")
+        if image["transform"] not in {"log", "linear"}:
+            raise ValueError("SAM image transform must be log or linear")
+        guided = result["energy_contrast"]
+        guided_keys = {"exclusion_seconds", "neighborhood_seconds", "epsilon",
+                       "min_valid_references", "contrast_threshold", "min_time_spacing",
+                       "min_frequency_spacing", "max_points", "mask_iou_threshold",
+                       "multimask_output"}
+        if set(guided) != guided_keys or not isinstance(guided["multimask_output"], bool):
+            raise ValueError("invalid energy_contrast configuration")
+        if not 0 <= guided["mask_iou_threshold"] <= 1:
+            raise ValueError("energy_contrast.mask_iou_threshold must be in [0, 1]")
+        from .sam_segmentation import validate_automatic_mask_options
+        validate_automatic_mask_options(result["automatic"])
         post = result["mask_postprocessing"]
         if post["strategy"] not in {"merge", "deduplicate", "none"}: raise ValueError("invalid mask strategy")
+        if not isinstance(post.get("enabled"), bool) or not isinstance(post.get("containment_enabled"), bool):
+            raise ValueError("mask postprocessing switches must be boolean")
         for key in ("iou_threshold", "containment_threshold"):
             if key in post and not 0 <= float(post[key]) <= 1: raise ValueError(f"{key} must be in [0, 1]")
     else:

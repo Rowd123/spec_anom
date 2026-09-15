@@ -50,7 +50,13 @@ def postprocess_masks(segments, *, enabled=True, strategy="merge", iou_threshold
         sources=tuple(sorted(x for s in group for x in s.source_segment_ids))
         chosen=max(group,key=lambda s:s.mask.sum())
         mask=np.logical_or.reduce([s.mask for s in group]) if strategy=="merge" else chosen.mask.copy()
-        metadata={"merged_segment_id":new_id,"source_segment_ids":sources,"merge_count":len(sources),
-                  "overlap_links":[x for x in links if x[0] in sources and x[1] in sources]}
+        source_metadata = [record for segment in group
+                           for record in segment.metadata.get("source_segments", [])]
+        metadata={"merged_segment_id":new_id,"source_segment_ids":sources,
+                  "merge_count":len(sources), "source_segments":source_metadata,
+                  "overlap_links":[{"source_segment_id":x[0],
+                                    "target_segment_id":x[1], "iou":x[2],
+                                    "containment":x[3]} for x in links
+                                   if x[0] in sources and x[1] in sources]}
         output.append(Segment(new_id,mask,sources,metadata))
     return output
