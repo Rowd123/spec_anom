@@ -25,14 +25,26 @@ def spectral_result():
     config = load_config("configs/spectral_analysis.json", "spectral")
     config["device"] = "cpu"
     config["representation"] = "stft"
-    time, signal = EXAMPLE.demonstration_signal(
-        config["windowing"]["size"], config["sampling_frequency"]
-    )
-    return time, signal, analyze_spectrum(signal, config)
+    config["quality"]["quality_column"] = "quality"
+    config["quality"]["valid_flags"] = ["good"]
+    frame, _ = EXAMPLE.demonstration_frame(config)
+    metadata, window = EXAMPLE.prepare_example_window(frame, config, 0)
+    spectral = analyze_spectrum(window.signal, config)
+    times = EXAMPLE.absolute_spectral_times(window, spectral)
+    return frame, metadata, window, spectral, times
+
+
+def test_example_uses_datetime_index_quality_flags_and_interpolation():
+    frame, metadata, window, _, spectral_times = spectral_result()
+    assert str(frame.index.dtype).startswith("datetime64")
+    assert {"good", "bad"} == set(frame["quality"])
+    assert metadata.loc[0, "interpolated_samples"] == 4
+    assert window.interpolated_mask.sum() == 4
+    assert spectral_times[0] == window.time[0]
 
 
 def test_reference_feature_table_contains_only_the_decided_columns():
-    _, _, spectral = spectral_result()
+    _, _, _, spectral, _ = spectral_result()
     mask = np.zeros(spectral.stft.shape, dtype=bool)
     mask[4:9, 8:15] = True
     frame = segments_to_dataframe([Segment(1, mask)], spectral)
@@ -43,7 +55,7 @@ def test_reference_feature_table_contains_only_the_decided_columns():
 
 
 def test_power_features_use_psd_and_not_sam_rgb_values():
-    _, _, spectral = spectral_result()
+    _, _, _, spectral, _ = spectral_result()
     mask = np.zeros(spectral.stft.shape, dtype=bool)
     mask[3:8, 5:20] = True
     segment = Segment(1, mask)
@@ -66,7 +78,7 @@ def test_power_features_use_psd_and_not_sam_rgb_values():
 
 
 def test_diagnostic_uses_contours_and_builds_feature_table():
-    time, signal, spectral = spectral_result()
+    frame, _, window, spectral, spectral_times = spectral_result()
     first = np.zeros(spectral.stft.shape, dtype=bool)
     second = np.zeros_like(first)
     first[3:8, 5:20] = True
@@ -75,9 +87,11 @@ def test_diagnostic_uses_contours_and_builds_feature_table():
     features = segments_to_dataframe(segments, spectral)
     image = np.repeat(np.zeros((*spectral.stft.shape, 1), dtype=np.uint8), 3, axis=2)
     figure = EXAMPLE.build_figure(
-        time, signal, spectral, image, segments, segments, features,
-        postprocessed=False, sam_device="cpu",
+        frame, window, spectral, spectral_times, image, segments, segments,
+        features, postprocessed=False, sam_device="cpu", window_id=0,
     )
     assert any(trace.type == "scattergl" and trace.name == "S1" for trace in figure.data)
     assert figure.data[-1].type == "table"
     assert list(figure.data[-1].header.values) == list(SEGMENT_FEATURE_COLUMNS)
+    assert any(trace.name == "flags qualité rejetés" for trace in figure.data)
+    assert any(trace.name == "lacunes interpolées" for trace in figure.data)

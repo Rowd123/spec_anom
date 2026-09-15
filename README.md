@@ -135,6 +135,15 @@ les contours réels des masques bruts, les contours retenus et leur table. Par
 défaut la table décrit les masques SAM bruts ; `--postprocess` applique les options
 de fusion de `sam.json` et décrit alors les objets finaux.
 
+L'entrée de cet exemple est un `DataFrame` indexé par des timestamps UTC et muni
+d'une colonne `quality`. Il contient des flags invalides et une petite lacune de
+timestamp. `prepare_analysis_windows` applique les critères de qualité et
+l'interpolation configurés avant la STFT. Le panneau temporel distingue le signal
+préparé, les observations valides, les flags rejetés et les valeurs interpolées.
+Les centres de trames STFT, les contours SAM et leurs infobulles sont replacés sur
+l'axe absolu fourni par l'index, et non affichés sur un simple compteur d'échantillons.
+`--window-id` permet de choisir la fenêtre préparée à examiner.
+
 La table est volontairement limitée à `segment_id`, `time_frequency_area`,
 `duration`, `frequency_width`, `central_frequency`, `frequency_dispersion`,
 `integrated_spectral_power`, `mean_spectral_power_density`, `temporal_variation`,
