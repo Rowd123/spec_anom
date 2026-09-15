@@ -1,4 +1,18 @@
 """First-stage spectral anomaly detection."""
+from .config import load_config, load_configs, validate_config
+from .devices import DeviceSelection, cuda_available, resolve_backend, resolve_device
+from .spectral import (DataFrameSpectralWindow, GEOMETRIC_FEATURES,
+                       PHYSICAL_STFT_FEATURES, SpectralResult,
+                       analyze_dataframe_windows, analyze_spectrum,
+                       validate_features)
+from .masks import Segment, containment, mask_iou, postprocess_masks
+from .features import (FEATURE_MEANING, SEGMENT_FEATURE_COLUMNS,
+                       extract_segment_features, segments_to_dataframe)
+from .preprocessing import FeaturePreprocessor, chronological_split
+from .models import AtypicalityModel, HDBSCANModel, load_artifact, save_artifact
+from .spot import SPOT
+from .pipeline import ModelPipeline, dataframe_to_segments, train_models
+from .segmentation import SAMSegmentationSession, SpectrumSegmentation, segment_spectrum
 
 from .energy import (
     WindowData,
@@ -36,6 +50,7 @@ from .sam_segmentation import (
     deduplicate_guided_masks,
     pixel_to_time_frequency,
     plot_sam_automatic_masks,
+    plot_sam_diagnostic,
     plot_sam_segmentation,
     plot_sam_guided_comparison,
     segment_contrast_points,
@@ -79,6 +94,16 @@ from .structure import (
 )
 
 __all__ = [
+    "load_config", "load_configs", "validate_config", "DeviceSelection", "cuda_available",
+    "resolve_backend", "resolve_device", "SpectralResult", "DataFrameSpectralWindow",
+    "analyze_spectrum", "analyze_dataframe_windows",
+    "validate_features", "GEOMETRIC_FEATURES", "PHYSICAL_STFT_FEATURES", "Segment",
+    "containment", "mask_iou", "postprocess_masks", "FEATURE_MEANING",
+    "SEGMENT_FEATURE_COLUMNS",
+    "extract_segment_features", "segments_to_dataframe", "FeaturePreprocessor",
+    "chronological_split", "AtypicalityModel", "HDBSCANModel", "save_artifact",
+    "load_artifact", "SPOT", "ModelPipeline", "dataframe_to_segments", "train_models",
+    "SAMSegmentationSession", "SpectrumSegmentation", "segment_spectrum",
     "COMPONENT_FEATURE_COLUMNS",
     "DEFAULT_LOG1P_FEATURES",
     "CandidateStructure",
@@ -115,6 +140,7 @@ __all__ = [
     "deduplicate_guided_masks",
     "pixel_to_time_frequency",
     "plot_sam_automatic_masks",
+    "plot_sam_diagnostic",
     "plot_sam_segmentation",
     "plot_sam_guided_comparison",
     "segment_contrast_points",
