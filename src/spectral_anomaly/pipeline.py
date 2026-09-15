@@ -20,7 +20,8 @@ def dataframe_to_segments(frame, spectral_config, sam_config, *, value_col="valu
       quality_col=q.get("quality_column"),valid_quality_flags=q.get("valid_flags"))
     rows=[]; diagnostics=[]
     for window_id,item in windows.items():
-        spectrum=analyze_spectrum(item.centered,spectral_config)
+        # Mean removal is owned explicitly by analyze_spectrum's configuration.
+        spectrum=analyze_spectrum(item.signal,spectral_config)
         image,raw,points=segment_spectrum(spectrum,sam_config,automatic_segmenter=automatic_segmenter,predictor=predictor)
         final=postprocess_masks(raw,**sam_config["mask_postprocessing"])
         start=metadata.loc[window_id,"start_time"] if "start_time" in metadata else window_id

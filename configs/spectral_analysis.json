@@ -3,6 +3,7 @@
   "sampling_period": "1s",
   "windowing": {"size": 256, "overlap": 128},
   "quality": {"quality_column": null, "valid_flags": null, "min_valid_fraction": 0.9, "max_interpolation_gap": 3},
+  "signal_preprocessing": {"remove_mean": true},
   "representation": "stft",
   "device": "auto",
   "transform": {"window": "hann", "window_length": 128, "n_fft": 256, "hop_length": 4, "center": true, "padtype": "reflect", "dtype": "float32"},

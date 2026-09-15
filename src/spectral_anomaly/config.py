@@ -4,8 +4,13 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+import numpy as np
+import pandas as pd
+
 REQUIRED = {
-    "spectral": {"sampling_frequency", "windowing", "representation", "transform", "device"},
+    "spectral": {"sampling_frequency", "sampling_period", "windowing", "quality",
+                 "signal_preprocessing", "representation", "transform", "msst",
+                 "psd", "device", "visualization"},
     "sam": {"model", "device", "image", "segmentation_mode", "automatic", "energy_contrast", "mask_postprocessing"},
     "models": {"preprocessing", "split", "atypicality", "spot", "hdbscan", "reproducibility"},
 }
@@ -18,8 +23,45 @@ def validate_config(data: Mapping[str, Any], kind: str) -> dict[str, Any]:
         raise ValueError(f"missing {kind} configuration section(s): {sorted(missing)}")
     result = dict(data)
     if kind == "spectral":
-        if result["representation"] not in {"stft", "msst"}: raise ValueError("representation must be stft or msst")
-        if float(result["sampling_frequency"]) <= 0: raise ValueError("sampling_frequency must be positive")
+        if set(result) != REQUIRED["spectral"]:
+            raise ValueError(f"unknown spectral configuration section(s): {sorted(set(result) - REQUIRED['spectral'])}")
+        if result["representation"] not in {"stft", "msst"}:
+            raise ValueError("representation must be stft or msst")
+        frequency = float(result["sampling_frequency"])
+        if not frequency > 0:
+            raise ValueError("sampling_frequency must be positive")
+        period_seconds = float(pd.to_timedelta(result["sampling_period"]).total_seconds())
+        if not np.isclose(period_seconds, 1 / frequency):
+            raise ValueError("sampling_period must equal 1 / sampling_frequency")
+        windowing = result["windowing"]
+        if set(windowing) != {"size", "overlap"}:
+            raise ValueError("windowing must contain only size and overlap")
+        if not isinstance(windowing["size"], int) or not 0 <= windowing["overlap"] < windowing["size"]:
+            raise ValueError("windowing requires an integer size and 0 <= overlap < size")
+        quality = result["quality"]
+        if set(quality) != {"quality_column", "valid_flags", "min_valid_fraction", "max_interpolation_gap"}:
+            raise ValueError("invalid quality configuration keys")
+        if not 0 <= quality["min_valid_fraction"] <= 1 or quality["max_interpolation_gap"] < 0:
+            raise ValueError("invalid quality thresholds")
+        preprocessing = result["signal_preprocessing"]
+        if set(preprocessing) != {"remove_mean"} or not isinstance(preprocessing["remove_mean"], bool):
+            raise ValueError("signal_preprocessing.remove_mean must be boolean")
+        transform = result["transform"]
+        expected_transform = {"window", "window_length", "n_fft", "hop_length", "center", "padtype", "dtype"}
+        if set(transform) != expected_transform:
+            raise ValueError("transform configuration has missing or unknown keys")
+        if transform["window_length"] > windowing["size"] or transform["n_fft"] < transform["window_length"]:
+            raise ValueError("require window_length <= window size and n_fft >= window_length")
+        if result["psd"] != {"scaling": "density", "one_sided": True}:
+            raise ValueError("only one-sided density PSD is currently supported")
+        if set(result["msst"]) != {"iteration_count", "gamma"}:
+            raise ValueError("msst must contain only iteration_count and gamma")
+        if result["msst"]["iteration_count"] < 1:
+            raise ValueError("msst.iteration_count must be positive")
+        if set(result["visualization"]) != {"compare_representations", "output"}:
+            raise ValueError("visualization must contain compare_representations and output")
+        if not isinstance(result["visualization"]["compare_representations"], bool):
+            raise ValueError("compare_representations must be boolean")
     elif kind == "sam":
         if result["segmentation_mode"] not in {"automatic", "energy_contrast"}: raise ValueError("invalid segmentation_mode")
         post = result["mask_postprocessing"]

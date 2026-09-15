@@ -39,11 +39,37 @@ alignée, jamais sur une pseudo-énergie MSST. Durée, largeur, aire et variatio
 forme dépendent seulement du masque et des axes physiques. `FEATURE_MEANING` rend
 cette distinction inspectable.
 
+### Convention de tramage et axes
+
+Le tramage est défini par le projet avant tout appel FFT, et non par NumPy,
+Torch ou ssqueezepy. Avec `center=true`, les centres sont les échantillons
+`0, hop_length, 2 hop_length, ...` strictement antérieurs à la fin du signal ;
+la fenêtre est complétée à gauche et à droite selon `padtype`. Avec
+`center=false`, seules les fenêtres entièrement contenues sont produites et le
+temps publié est leur centre géométrique
+`(start + (window_length - 1) / 2) / sampling_frequency`. CPU et GPU reçoivent
+donc exactement les mêmes trames pondérées et retournent la même géométrie.
+`center` ne retire jamais la moyenne : cette opération est contrôlée uniquement
+par `signal_preprocessing.remove_mean`.
+
+L'axe fréquentiel est `rfftfreq(n_fft, 1/fs)`. Augmenter `n_fft` densifie cette
+grille par zero-padding mais n'améliore pas à lui seul la résolution physique,
+qui dépend surtout de `window_length`, de la fenêtre et de la durée observée.
+
+### Convention PSD
+
+La STFT est le FFT brut des trames pondérées. Pour `scaling=density` et un signal
+réel unilatéral, la PSD vaut `|X|² / (fs × sum(w²))` pour DC et Nyquist, et le
+double pour les bins intérieurs positifs. Son unité est donc l'unité du signal
+au carré par hertz et son intégrale fréquentielle respecte Parseval pour chaque
+trame. Les seules options actuellement acceptées sont `density` et
+`one_sided=true`; toute autre valeur provoque une erreur explicite.
+
 ## GPU sans faux accélérateur
 
 Les devices spectraux acceptent `auto`, `cpu`, `cuda` ou `cuda:N`. La STFT CUDA
 utilise réellement `torch.stft` et conserve les tenseurs sur GPU jusqu'au résultat ;
-la MSST actuelle (ssqueezepy + réassignation Numba) est explicitement CPU et
+la MSST actuelle (réassignation sur la grille STFT, accélérée par Numba) est explicitement CPU et
 `auto` retombe donc sur CPU. Demander CUDA pour MSST produit une erreur plutôt que
 de simuler une accélération. SAM utilise le device du modèle PyTorch.
 
@@ -81,6 +107,13 @@ lots ; aucun CSV intermédiaire n'est requis.
 
 SAM 2 demeure optionnel et aucun poids n'est téléchargé. Installer une version de
 PyTorch adaptée puis SAM 2 depuis son dépôt officiel et renseigner le checkpoint.
+
+L'exemple spectral contient deux signaux : deux tons connus pour contrôler les
+fréquences, puis un ton permanent, une bouffée localisée et un chirp. Lorsque
+`visualization.compare_representations=true`, il calcule directement STFT et
+MSST avec `analyze_spectrum` sur les mêmes fenêtres et vérifie l'égalité exacte
+de leurs axes avant de tracer les deux cartes. L'ancien exemple morphologique
+`compare_stft_msst.py` reste séparé et ne participe pas à cette comparaison.
 
 ## Tests
 
