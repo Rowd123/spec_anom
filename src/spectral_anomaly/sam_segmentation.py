@@ -210,7 +210,9 @@ def spectrogram_to_sam_image(
 ) -> np.ndarray:
     """Convert a spectral representation (or its magnitude) to grayscale RGB.
 
-    ``transform="log"`` optionally compresses the magnitude's dynamic range with
+    Normalisation is performed independently for each input window. It can make
+    a low-energy window look visually strong and is not an absolute-energy
+    calibration. ``transform="log"`` compresses the magnitude's dynamic range with
     ``log1p``; ``transform="linear"`` leaves it linear.  Both paths then use the
     same percentile clipping and uint8 scaling.  No significance/coherence mask
     or color map is involved.
@@ -434,7 +436,7 @@ class SAMStructureSegmenter:
         self._image_shape: tuple[int, int] | None = None
         if predictor is not None:
             self.predictor = predictor
-            self.device = device
+            self.device = str(getattr(predictor, "device", device))
             return
         if checkpoint is None:
             raise ValueError("checkpoint is required when predictor is not provided")
@@ -541,7 +543,7 @@ class SAMAutomaticMaskSegmenter:
         self.options = validate_automatic_mask_options(automatic_mask_options)
         if generator is not None:
             self.generator = generator
-            self.device = device
+            self.device = str(getattr(generator, "device", device))
             return
         if checkpoint is None:
             raise ValueError("checkpoint is required when generator is not provided")
@@ -603,12 +605,17 @@ def segment_contrast_points(
     points: Sequence[ContrastPoint],
     *,
     iou_threshold: float,
+    multimask_output: bool = True,
 ) -> GuidedSAMResult:
     """Prompt SAM independently and retain its highest predicted-IoU proposal."""
+    if not isinstance(multimask_output, bool):
+        raise ValueError("multimask_output must be a boolean")
     segmenter.set_image(image)
     raw: list[GuidedSAMMask] = []
     for point_index, point in enumerate(points, 1):
-        result = segmenter.segment_point(point.pixel, multimask_output=True)
+        result = segmenter.segment_point(
+            point.pixel, multimask_output=multimask_output
+        )
         selected = result.best_index
         raw.append(GuidedSAMMask(
             point_index, point, selected, result.best_mask, result.best_score, result
@@ -706,13 +713,9 @@ def plot_sam_automatic_masks(
         raise ValueError("physical axes must match the spectral map shape")
     if max_labels < 0:
         raise ValueError("max_labels must be non-negative")
-    labels = np.zeros(magnitude.shape, dtype=int)
-    # Largest regions first, with smaller regions remaining visible on top.
     for segment in segments:
         if segment.mask.shape != magnitude.shape:
             raise ValueError("all segment masks must match the spectral map shape")
-        labels[segment.mask] = segment.segment_id
-    masked_labels = np.where(labels, labels, np.nan)
     common = {"x": spectral_time, "y": frequencies, "showscale": False}
     figure = make_subplots(
         rows=2, cols=3,
@@ -722,9 +725,10 @@ def plot_sam_automatic_masks(
     )
     figure.add_trace(go.Heatmap(z=np.log1p(magnitude), colorscale="Viridis", **common), 1, 1)
     figure.add_trace(go.Heatmap(z=image[..., 0], colorscale="Gray", **common), 1, 2)
-    figure.add_trace(go.Heatmap(z=masked_labels, colorscale="Turbo", **common), 1, 3)
+    figure.add_trace(go.Heatmap(z=np.log1p(magnitude), colorscale="Viridis", **common), 1, 3)
+    _add_mask_contours(figure, segments, spectral_time, frequencies, 1, 3)
     figure.add_trace(go.Heatmap(z=np.log1p(magnitude), colorscale="Viridis", **common), 2, 1)
-    figure.add_trace(go.Heatmap(z=masked_labels, colorscale="Turbo", opacity=0.45, **common), 2, 1)
+    _add_mask_contours(figure, segments, spectral_time, frequencies, 2, 1)
     for segment in segments[:max_labels]:
         x, y = segment.centroid or (segment.bbox[0], segment.bbox[1])
         figure.add_annotation(x=spectral_time[int(np.clip(round(x), 0, len(spectral_time)-1))],
@@ -753,6 +757,117 @@ def plot_sam_automatic_masks(
 
 def _format_optional(value: float | None) -> str:
     return "—" if value is None else f"{value:.4f}"
+
+
+def _add_mask_contours(figure, segments, spectral_time, frequencies, row, col):
+    """Add independent mask boundaries; overlaps never create synthetic IDs."""
+    import plotly.graph_objects as go
+    from scipy.ndimage import binary_erosion
+
+    palette = ["#ef4444", "#22c55e", "#3b82f6", "#f59e0b", "#a855f7", "#06b6d4"]
+    for index, segment in enumerate(segments):
+        boundary = segment.mask & ~binary_erosion(segment.mask)
+        rows, columns = np.nonzero(boundary)
+        figure.add_trace(go.Scattergl(
+            x=np.asarray(spectral_time)[columns], y=np.asarray(frequencies)[rows],
+            mode="markers", marker={"size": 3, "color": palette[index % len(palette)]},
+            name=f"S{segment.segment_id}", legendgroup=f"S{segment.segment_id}",
+            hovertemplate=f"segment S{segment.segment_id}<br>t=%{{x}}<br>f=%{{y}}<extra></extra>",
+        ), row=row, col=col)
+
+
+def plot_sam_diagnostic(
+    signal: np.ndarray,
+    signal_time: np.ndarray,
+    spectral_map: np.ndarray,
+    sam_image: np.ndarray,
+    raw_segments,
+    final_segments,
+    spectral_time: np.ndarray,
+    frequencies: np.ndarray,
+    *,
+    device: str,
+    mode: str,
+    contrast: np.ndarray | None = None,
+    points: Sequence[ContrastPoint] = (),
+    guided: GuidedSAMResult | None = None,
+):
+    """Plot exact SAM input, raw outputs, source metadata, and final masks."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    individual = [(f"Masque brut S{s.segment_id}", s) for s in raw_segments]
+    if guided is not None:
+        individual = []
+        for prompted in guided.raw_masks:
+            for proposal_index, (mask, score) in enumerate(
+                    zip(prompted.proposals.masks, prompted.proposals.scores)):
+                label = "retenu" if proposal_index == prompted.selected_index else "proposition"
+                proxy = type("MaskView", (), {"segment_id": f"P{prompted.point_index}.M{proposal_index + 1}",
+                                               "mask": np.asarray(mask, dtype=bool)})()
+                individual.append((f"P{prompted.point_index} M{proposal_index + 1} — {label}, "
+                                   f"predicted_iou={score:.3f}", proxy))
+    base_rows = 3 + (1 if contrast is not None else 0)
+    individual_rows = (len(individual) + 2) // 3
+    table_row = base_rows + individual_rows + 1
+    specs = [[{"colspan": 3}, None, None], [{}, {}, {}], [{}, {}, {}]]
+    if contrast is not None:
+        specs.append([{"colspan": 3}, None, None])
+    specs.extend([[{}, {}, {}] for _ in range(individual_rows)])
+    specs.append([{"type": "table", "colspan": 3}, None, None])
+    titles = ["Signal temporel", "Représentation originale", "Image uint8 RGB exacte (canal gris)",
+              "Masques SAM bruts — contours", "Overlay brut", "Après post-traitement"]
+    if contrast is not None:
+        titles.append("Contraste énergétique local et points positifs")
+    titles.extend(title for title, _ in individual)
+    titles.append("Métadonnées brutes et traçabilité finale")
+    figure = make_subplots(rows=table_row, cols=3, specs=specs, subplot_titles=titles)
+    common = {"x": spectral_time, "y": frequencies, "showscale": False}
+    figure.add_trace(go.Scatter(x=signal_time, y=signal, name="signal"), 1, 1)
+    magnitude = np.log1p(np.abs(spectral_map))
+    figure.add_trace(go.Heatmap(z=magnitude, colorscale="Viridis", **common), 2, 1)
+    figure.add_trace(go.Heatmap(z=sam_image[..., 0], colorscale="Gray", **common), 2, 2)
+    _add_mask_contours(figure, raw_segments, spectral_time, frequencies, 2, 3)
+    figure.add_trace(go.Heatmap(z=magnitude, colorscale="Viridis", **common), 3, 1)
+    figure.add_trace(go.Heatmap(z=magnitude, colorscale="Viridis", **common), 3, 2)
+    _add_mask_contours(figure, raw_segments, spectral_time, frequencies, 3, 2)
+    figure.add_trace(go.Heatmap(z=magnitude, colorscale="Viridis", **common), 3, 3)
+    _add_mask_contours(figure, final_segments, spectral_time, frequencies, 3, 3)
+    next_row = 4
+    if contrast is not None:
+        figure.add_trace(go.Heatmap(z=contrast, colorscale="Magma", **common), next_row, 1)
+        figure.add_trace(go.Scatter(
+            x=[point.time for point in points], y=[point.frequency for point in points],
+            mode="markers+text", text=[f"P{i}" for i in range(1, len(points) + 1)],
+            customdata=[point.contrast for point in points], marker={"color": "cyan", "size": 9},
+            hovertemplate="%{text}<br>t=%{x}<br>f=%{y}<br>contraste=%{customdata:.3g}<extra></extra>",
+            name="points guidés",
+        ), next_row, 1)
+        next_row += 1
+    for index, (_, segment) in enumerate(individual):
+        row, col = next_row + index // 3, index % 3 + 1
+        figure.add_trace(go.Heatmap(z=segment.mask.astype(np.uint8), colorscale="Blues", **common), row, col)
+    source_records = [record for segment in raw_segments
+                      for record in segment.metadata.get("source_segments", [])]
+    headers = ["segment_id", "area", "predicted_iou", "stability_score", "bbox",
+               "centroid", "image_fraction"]
+    columns = [[record.get(key, "—") for record in source_records] for key in headers]
+    final_trace = [f"F{s.segment_id}: sources={s.source_segment_ids}; "
+                   f"links={s.metadata.get('overlap_links', [])}" for s in final_segments]
+    columns[0] = [*columns[0], *final_trace]
+    for column in columns[1:]:
+        column.extend(["—"] * len(final_trace))
+    figure.add_trace(go.Table(header={"values": headers}, cells={"values": columns}), table_row, 1)
+    duplicate_text = ""
+    if guided is not None and guided.duplicates:
+        duplicate_text = " — déduplications guidées: " + str([
+            {"removed_prompt": d.removed_point_index, "kept_prompt": d.kept_point_index,
+             "iou": round(d.iou, 4)} for d in guided.duplicates])
+    figure.update_layout(
+        title=f"Diagnostic SAM 2 réel — mode={mode}, device={device}{duplicate_text}",
+        height=max(1200, table_row * 320), template="plotly_white",
+    )
+    return figure
 
 
 def plot_sam_segmentation(

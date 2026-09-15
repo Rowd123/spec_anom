@@ -100,6 +100,50 @@ def _squeeze_from_map(
     return squeezed
 
 
+def multisynchrosqueeze_stft(
+    coefficients: np.ndarray,
+    frequencies: np.ndarray,
+    sampling_frequency: float,
+    hop_length: int,
+    *,
+    iteration_count: int = 3,
+    gamma: float | None = None,
+) -> np.ndarray:
+    """Reassign an already-framed STFT without changing its physical grid.
+
+    Instantaneous frequency is estimated from phase advance between adjacent
+    frames. Reassignment always targets bins of the input STFT, which guarantees
+    exact shape and coordinate alignment for downstream masks.
+    """
+    values = np.asarray(coefficients)
+    axis = np.asarray(frequencies, dtype=float)
+    if values.ndim != 2 or values.shape[0] != len(axis) or values.shape[1] < 2:
+        raise ValueError("coefficients must match frequencies and contain at least two frames")
+    if len(axis) < 2 or not np.all(np.diff(axis) > 0):
+        raise ValueError("frequencies must be strictly increasing")
+    if iteration_count < 1 or hop_length < 1:
+        raise ValueError("iteration_count and hop_length must be positive")
+    threshold = 10 * np.finfo(values.real.dtype).eps if gamma is None else float(gamma)
+    if not np.isfinite(threshold) or threshold < 0:
+        raise ValueError("gamma must be finite and non-negative")
+
+    phase_advance = np.angle(values[:, 1:] * np.conj(values[:, :-1]))
+    # Our DFT uses a frame-local time origin, so phase advance is the physical
+    # frequency modulo the frame sampling rate. Select the 2π branch nearest to
+    # the analysis-bin frequency; simply adding that bin would count it twice.
+    expected_advance = 2 * np.pi * axis[:, None] * hop_length / sampling_frequency
+    unwrapped_advance = phase_advance + 2 * np.pi * np.round(
+        (expected_advance - phase_advance) / (2 * np.pi)
+    )
+    instantaneous = unwrapped_advance * sampling_frequency / (2 * np.pi * hop_length)
+    instantaneous = np.concatenate((instantaneous[:, :1], instantaneous), axis=1)
+    instantaneous[np.abs(values) <= threshold] = np.nan
+    step = float(axis[1] - axis[0])
+    base_map = _frequency_map_to_bins(instantaneous, float(axis[0]), step, len(axis))
+    final_map = _compose_frequency_map(base_map, iteration_count)
+    return _squeeze_from_map(values, final_map, step)
+
+
 def msst_stft(
     signal: np.ndarray,
     sampling_frequency: float,

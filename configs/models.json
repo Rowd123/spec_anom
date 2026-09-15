@@ -1,0 +1,13 @@
+{
+  "preprocessing": {
+    "atypicality_features": ["integrated_energy", "duration", "frequency_width", "central_frequency", "frequency_dispersion", "temporal_variation", "frequency_variation", "local_energy_contrast"],
+    "hdbscan_features": ["time_frequency_area", "mean_energy_density", "duration", "frequency_width", "central_frequency", "frequency_dispersion", "temporal_variation", "frequency_variation"],
+    "log1p": ["integrated_energy", "time_frequency_area", "mean_energy_density", "duration", "frequency_width", "local_energy_contrast"],
+    "scaling": "robust"
+  },
+  "split": {"train_fraction": 0.6, "calibration_fraction": 0.2, "evaluation_fraction": 0.2, "strategy": "chronological", "time_column": "window_start"},
+  "atypicality": {"backend": "auto", "type": "isolation_forest", "n_estimators": 200, "max_samples": "auto", "contamination": "auto", "n_jobs": -1},
+  "spot": {"q": 0.001, "initial_quantile": 0.98, "min_excesses": 5},
+  "hdbscan": {"backend": "auto", "min_cluster_size": 10, "min_samples": 5, "metric": "euclidean", "cluster_selection_method": "eom"},
+  "reproducibility": {"random_seed": 42, "artifact_version": "1.0", "preprocessing_version": "1.0"}
+}
