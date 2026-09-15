@@ -1,0 +1,9 @@
+{
+  "model": {"checkpoint": "checkpoints/sam2.1_hiera_small.pt", "config": "configs/sam2.1/sam2.1_hiera_s.yaml"},
+  "device": "auto",
+  "image": {"transform": "log", "percentiles": [1.0, 99.0], "epsilon": 1e-12},
+  "segmentation_mode": "automatic",
+  "automatic": {"points_per_side": 32, "points_per_batch": 64, "pred_iou_thresh": 0.8, "stability_score_thresh": 0.8, "stability_score_offset": 1.0, "box_nms_thresh": 0.7, "crop_n_layers": 0, "crop_nms_thresh": 0.7, "crop_overlap_ratio": 0.3413333333333333, "crop_n_points_downscale_factor": 1, "min_mask_region_area": 0, "use_m2m": false},
+  "energy_contrast": {"exclusion_seconds": 4.0, "neighborhood_seconds": 24.0, "epsilon": 1e-12, "min_valid_references": 6, "contrast_threshold": 6.0, "min_time_spacing": 4.0, "min_frequency_spacing": 0.02, "max_points": 12, "mask_iou_threshold": 0.85, "multimask_output": true},
+  "mask_postprocessing": {"enabled": true, "strategy": "merge", "iou_threshold": 0.8, "containment_enabled": false, "containment_threshold": 0.95}
+}
