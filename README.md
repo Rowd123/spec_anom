@@ -144,6 +144,31 @@ Les centres de trames STFT, les contours SAM et leurs infobulles sont replacés 
 l'axe absolu fourni par l'index, et non affichés sur un simple compteur d'échantillons.
 `--window-id` permet de choisir la fenêtre préparée à examiner.
 
+La même préparation est disponible pour un signal utilisateur sans dépendre de
+l'exemple :
+
+```python
+from spectral_anomaly import analyze_dataframe_windows
+
+metadata, windows = analyze_dataframe_windows(
+    frame,
+    spectral_config,
+    value_col="measurement",
+    quality_col="quality_flag",
+    valid_quality_flags=("good",),
+)
+item = windows[0]
+print(item.window.time)       # grille nettoyée dans le repère d'origine
+print(item.absolute_times)    # centres STFT dans ce même repère temporel
+print(item.spectral.stft)
+```
+
+`metadata` contient également les fenêtres rejetées et leurs raisons. Chaque
+`DataFrameSpectralWindow` accepté conserve le signal nettoyé, les masques des
+observations/interpolations, le résultat spectral et l'axe absolu. Les index
+`DatetimeIndex`, `TimedeltaIndex` et numériques sont pris en charge ; pour un index
+numérique, l'unité attendue est la seconde.
+
 La table est volontairement limitée à `segment_id`, `time_frequency_area`,
 `duration`, `frequency_width`, `central_frequency`, `frequency_dispersion`,
 `integrated_spectral_power`, `mean_spectral_power_density`, `temporal_variation`,

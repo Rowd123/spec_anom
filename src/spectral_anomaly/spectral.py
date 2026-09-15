@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 import numpy as np
+import pandas as pd
 from scipy.signal import get_window
 
 from .devices import DeviceSelection, resolve_device
+from .energy import WindowData, prepare_analysis_windows
 from .msst import multisynchrosqueeze_stft
 
 
@@ -35,6 +37,16 @@ class SpectralResult:
     device: DeviceSelection
     sampling_frequency: float
     processed_signal: np.ndarray
+
+
+@dataclass(frozen=True)
+class DataFrameSpectralWindow:
+    """One quality-prepared DataFrame window and its absolute spectral axis."""
+
+    window_id: int
+    window: WindowData
+    spectral: SpectralResult
+    absolute_times: pd.Index
 
 
 @dataclass(frozen=True)
@@ -184,6 +196,64 @@ def analyze_spectrum(signal: np.ndarray, config: Mapping[str, Any]) -> SpectralR
     return SpectralResult(representation, transformed, coefficients, psd,
                           plan.frequencies, plan.times, selection,
                           plan.sampling_frequency, processed)
+
+
+def _absolute_spectral_times(
+    window_time: pd.Index, offsets: np.ndarray, *, name=None
+) -> pd.Index:
+    """Apply frame-center offsets in seconds to the original time coordinate."""
+    if isinstance(window_time, (pd.DatetimeIndex, pd.TimedeltaIndex)):
+        return pd.Index(window_time[0] + pd.to_timedelta(offsets, unit="s"),
+                        name=name if name is not None else window_time.name)
+    return pd.Index(float(window_time[0]) + np.asarray(offsets, dtype=float),
+                    name=name if name is not None else window_time.name)
+
+
+def analyze_dataframe_windows(
+    data: pd.DataFrame,
+    config: Mapping[str, Any],
+    *,
+    value_col,
+    quality_col=None,
+    valid_quality_flags=None,
+) -> tuple[pd.DataFrame, dict[int, DataFrameSpectralWindow]]:
+    """Clean, window and transform a timestamped DataFrame.
+
+    Invalid quality flags and missing timestamps are handled by
+    :func:`prepare_analysis_windows`. The relative STFT offsets remain in
+    ``item.spectral.times`` for physical durations, while ``absolute_times``
+    retains the coordinate system and name of the supplied DataFrame index.
+    """
+    windowing = config["windowing"]
+    quality = config["quality"]
+    selected_quality_col = quality_col if quality_col is not None else quality.get("quality_column")
+    selected_flags = valid_quality_flags if valid_quality_flags is not None else quality.get("valid_flags")
+    sampling_period = config["sampling_period"]
+    if pd.api.types.is_numeric_dtype(data.index.dtype) and not isinstance(sampling_period, (int, float)):
+        sampling_period = pd.to_timedelta(sampling_period).total_seconds()
+    metadata, prepared = prepare_analysis_windows(
+        data,
+        value_col=value_col,
+        quality_col=selected_quality_col,
+        valid_quality_flags=selected_flags,
+        sampling_period=sampling_period,
+        window_size=windowing["size"],
+        overlap=windowing["overlap"],
+        min_valid_ratio=quality["min_valid_fraction"],
+        max_interpolation_gap=quality["max_interpolation_gap"],
+    )
+    analyses = {}
+    for window_id, window in prepared.items():
+        spectral = analyze_spectrum(window.signal, config)
+        analyses[window_id] = DataFrameSpectralWindow(
+            window_id=window_id,
+            window=window,
+            spectral=spectral,
+            absolute_times=_absolute_spectral_times(
+                window.time, spectral.times, name=data.index.name
+            ),
+        )
+    return metadata, analyses
 
 
 GEOMETRIC_FEATURES = frozenset({"time_frequency_area", "duration", "frequency_width", "temporal_variation", "frequency_variation"})

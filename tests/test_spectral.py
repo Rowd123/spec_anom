@@ -1,9 +1,11 @@
 from copy import deepcopy
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from spectral_anomaly import analyze_spectrum, cuda_available, load_config
+from spectral_anomaly import (analyze_dataframe_windows, analyze_spectrum,
+                              cuda_available, load_config)
 
 
 def config(**transform_updates):
@@ -77,6 +79,37 @@ def test_explicit_cuda_for_msst_is_rejected():
     cfg["device"] = "cuda"
     with pytest.raises(RuntimeError, match="no genuine GPU backend"):
         analyze_spectrum(np.ones(256), cfg)
+
+
+def test_dataframe_api_cleans_quality_and_retains_datetime_axis():
+    cfg = config(window_length=4, n_fft=8, hop_length=2, center=True)
+    cfg["windowing"] = {"size": 8, "overlap": 4}
+    cfg["quality"]["max_interpolation_gap"] = 2
+    cfg["quality"]["min_valid_fraction"] = 0.7
+    index = pd.date_range("2025-02-01", periods=12, freq="s", name="measurement_time")
+    frame = pd.DataFrame({"signal": np.arange(12.0), "flag": "valid"}, index=index)
+    frame.loc[index[2], "flag"] = "invalid"
+    frame = frame.drop(index[5])
+    metadata, windows = analyze_dataframe_windows(
+        frame, cfg, value_col="signal", quality_col="flag",
+        valid_quality_flags=("valid",),
+    )
+    assert metadata.loc[0, "interpolated_samples"] == 2
+    assert windows[0].window.interpolated_mask.sum() == 2
+    assert windows[0].absolute_times.name == "measurement_time"
+    expected = pd.Index(index[0] + pd.to_timedelta(windows[0].spectral.times, unit="s"),
+                        name="measurement_time")
+    pd.testing.assert_index_equal(windows[0].absolute_times, expected)
+
+
+def test_dataframe_api_retains_numeric_time_axis_in_seconds():
+    cfg = config(window_length=4, n_fft=8, hop_length=2, center=True)
+    cfg["windowing"] = {"size": 8, "overlap": 0}
+    frame = pd.DataFrame({"signal": np.arange(8.0)},
+                         index=pd.Index(np.arange(8.0), name="seconds"))
+    _, windows = analyze_dataframe_windows(frame, cfg, value_col="signal")
+    np.testing.assert_allclose(windows[0].absolute_times, windows[0].spectral.times)
+    assert windows[0].absolute_times.name == "seconds"
 
 
 @pytest.mark.skipif(not cuda_available(), reason="CUDA is unavailable")

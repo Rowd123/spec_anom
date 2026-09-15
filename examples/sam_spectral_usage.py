@@ -18,10 +18,9 @@ from sam_usage import demonstration_signal
 from spectral_anomaly import (
     SAMSegmentationSession,
     SEGMENT_FEATURE_COLUMNS,
-    analyze_spectrum,
+    analyze_dataframe_windows,
     load_config,
     postprocess_masks,
-    prepare_analysis_windows,
     segments_to_dataframe,
 )
 
@@ -46,17 +45,12 @@ def demonstration_frame(config):
 
 def prepare_example_window(frame, config, window_id):
     """Run the production quality preparation and select one accepted window."""
-    quality = config["quality"]
-    metadata, windows = prepare_analysis_windows(
+    metadata, windows = analyze_dataframe_windows(
         frame,
+        config,
         value_col="value",
-        quality_col=quality["quality_column"],
-        valid_quality_flags=quality["valid_flags"],
-        sampling_period=config["sampling_period"],
-        window_size=config["windowing"]["size"],
-        overlap=config["windowing"]["overlap"],
-        min_valid_ratio=quality["min_valid_fraction"],
-        max_interpolation_gap=quality["max_interpolation_gap"],
+        quality_col="quality",
+        valid_quality_flags=("good",),
     )
     if window_id not in metadata.index:
         raise ValueError(f"window-id {window_id} is outside 0..{len(metadata) - 1}")
@@ -64,11 +58,6 @@ def prepare_example_window(frame, config, window_id):
         reason = metadata.loc[window_id, "rejection_reason"]
         raise ValueError(f"window {window_id} was rejected by quality control: {reason}")
     return metadata, windows[window_id]
-
-
-def absolute_spectral_times(window, spectral):
-    """Map STFT frame-center offsets onto the supplied timestamp index."""
-    return window.time[0] + pd.to_timedelta(spectral.times, unit="s")
 
 
 def _add_contours(figure, segments, times, frequencies, *, row, col, labels):
@@ -194,15 +183,12 @@ def main(argv=None):
     spectral_config = deepcopy(load_config(args.spectral_config, "spectral"))
     sam_config = deepcopy(load_config(args.sam_config, "sam"))
     spectral_config["representation"] = "stft"
-    # The bundled demonstration DataFrame names its quality vocabulary here;
-    # thresholds and interpolation limits still come from the JSON config.
-    spectral_config["quality"]["quality_column"] = "quality"
-    spectral_config["quality"]["valid_flags"] = ["good"]
     sam_config["segmentation_mode"] = "automatic"
     frame, _ = demonstration_frame(spectral_config)
-    metadata, window = prepare_example_window(frame, spectral_config, args.window_id)
-    spectral = analyze_spectrum(window.signal, spectral_config)
-    spectral_times = absolute_spectral_times(window, spectral)
+    metadata, prepared = prepare_example_window(frame, spectral_config, args.window_id)
+    window = prepared.window
+    spectral = prepared.spectral
+    spectral_times = prepared.absolute_times
 
     # Real SAM 2 is constructed exactly once; no demo generator or fabricated mask.
     session = SAMSegmentationSession(sam_config)

@@ -6,7 +6,6 @@ import numpy as np
 from spectral_anomaly import (
     SEGMENT_FEATURE_COLUMNS,
     Segment,
-    analyze_spectrum,
     extract_segment_features,
     load_config,
     segments_to_dataframe,
@@ -25,13 +24,9 @@ def spectral_result():
     config = load_config("configs/spectral_analysis.json", "spectral")
     config["device"] = "cpu"
     config["representation"] = "stft"
-    config["quality"]["quality_column"] = "quality"
-    config["quality"]["valid_flags"] = ["good"]
     frame, _ = EXAMPLE.demonstration_frame(config)
-    metadata, window = EXAMPLE.prepare_example_window(frame, config, 0)
-    spectral = analyze_spectrum(window.signal, config)
-    times = EXAMPLE.absolute_spectral_times(window, spectral)
-    return frame, metadata, window, spectral, times
+    metadata, prepared = EXAMPLE.prepare_example_window(frame, config, 0)
+    return frame, metadata, prepared.window, prepared.spectral, prepared.absolute_times
 
 
 def test_example_uses_datetime_index_quality_flags_and_interpolation():

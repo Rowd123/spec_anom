@@ -1,8 +1,10 @@
 """First-stage spectral anomaly detection."""
 from .config import load_config, load_configs, validate_config
 from .devices import DeviceSelection, cuda_available, resolve_backend, resolve_device
-from .spectral import (GEOMETRIC_FEATURES, PHYSICAL_STFT_FEATURES, SpectralResult,
-                       analyze_spectrum, validate_features)
+from .spectral import (DataFrameSpectralWindow, GEOMETRIC_FEATURES,
+                       PHYSICAL_STFT_FEATURES, SpectralResult,
+                       analyze_dataframe_windows, analyze_spectrum,
+                       validate_features)
 from .masks import Segment, containment, mask_iou, postprocess_masks
 from .features import (FEATURE_MEANING, SEGMENT_FEATURE_COLUMNS,
                        extract_segment_features, segments_to_dataframe)
@@ -93,7 +95,8 @@ from .structure import (
 
 __all__ = [
     "load_config", "load_configs", "validate_config", "DeviceSelection", "cuda_available",
-    "resolve_backend", "resolve_device", "SpectralResult", "analyze_spectrum",
+    "resolve_backend", "resolve_device", "SpectralResult", "DataFrameSpectralWindow",
+    "analyze_spectrum", "analyze_dataframe_windows",
     "validate_features", "GEOMETRIC_FEATURES", "PHYSICAL_STFT_FEATURES", "Segment",
     "containment", "mask_iou", "postprocess_masks", "FEATURE_MEANING",
     "SEGMENT_FEATURE_COLUMNS",
