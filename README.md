@@ -96,6 +96,7 @@ sont ensuite recalculées à partir du masque final, et ne sont jamais moyennée
 python examples/spectral_analysis_usage.py --config configs/spectral_analysis.json
 python examples/sam_usage.py --spectral-config configs/spectral_analysis.json --sam-config configs/sam.json
 python examples/sam_spectral_usage.py --spectral-config configs/spectral_analysis.json --sam-config configs/sam.json --output sam_spectral_diagnostic.html
+python examples/sam_spectral_structure_usage.py --spectral-config configs/spectral_analysis.json --sam-config configs/sam.json --output sam_spectral_segments.html
 python examples/pipeline_usage.py --spectral-config configs/spectral_analysis.json --sam-config configs/sam.json --models-config configs/models.json
 ```
 
@@ -168,6 +169,12 @@ print(item.spectral.stft)
 observations/interpolations, le résultat spectral et l'axe absolu. Les index
 `DatetimeIndex`, `TimedeltaIndex` et numériques sont pris en charge ; pour un index
 numérique, l'unité attendue est la seconde.
+
+Pour une présentation compacte analogue visuellement à `structure_usage.py`, sans
+utiliser son pipeline morphologique, `sam_spectral_structure_usage.py` produit une
+grille 2 × 3 : Signal, STFT, SAM input image, Raw SAM segments, Selected segments
+et Segment features. Les diagnostics `predicted_iou` et `stability_score` sont
+imprimés séparément dans le terminal et ne sont pas ajoutés au vecteur de features.
 
 La table est volontairement limitée à `segment_id`, `time_frequency_area`,
 `duration`, `frequency_width`, `central_frequency`, `frequency_dispersion`,

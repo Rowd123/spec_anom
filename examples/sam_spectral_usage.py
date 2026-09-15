@@ -60,7 +60,7 @@ def prepare_example_window(frame, config, window_id):
     return metadata, windows[window_id]
 
 
-def _add_contours(figure, segments, times, frequencies, *, row, col, labels):
+def add_mask_contours(figure, segments, times, frequencies, *, row, col, labels=True):
     """Draw true mask boundaries independently, never by summing segment IDs."""
     for index, segment in enumerate(segments):
         boundary = segment.mask & ~binary_erosion(segment.mask)
@@ -134,10 +134,10 @@ def build_figure(source_frame, window, spectral, spectral_times, sam_image,
     # exact uint8 values while retaining the physical datetime/frequency axes.
     figure.add_trace(go.Heatmap(z=sam_image[..., 0], colorscale="Gray", **common), 2, 2)
     figure.add_trace(go.Heatmap(z=magnitude, colorscale="Greys", opacity=0.35, **common), 3, 1)
-    _add_contours(figure, raw_segments, spectral_times, spectral.frequencies,
+    add_mask_contours(figure, raw_segments, spectral_times, spectral.frequencies,
                   row=3, col=1, labels=True)
     figure.add_trace(go.Heatmap(z=magnitude, colorscale="Viridis", **common), 3, 2)
-    _add_contours(figure, displayed_segments, spectral_times, spectral.frequencies,
+    add_mask_contours(figure, displayed_segments, spectral_times, spectral.frequencies,
                   row=3, col=2, labels=True)
 
     headers = list(SEGMENT_FEATURE_COLUMNS)
