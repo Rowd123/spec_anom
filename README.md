@@ -176,6 +176,25 @@ grille 2 × 3 : Signal, STFT, SAM input image, Raw SAM segments, Selected segmen
 et Segment features. Les diagnostics `predicted_iou` et `stability_score` sont
 imprimés séparément dans le terminal et ne sont pas ajoutés au vecteur de features.
 
+Un CSV réel peut être fourni directement ; sa première colonne devient l'index
+temporel et les noms métier ne sont jamais imposés :
+
+```bash
+python examples/sam_spectral_structure_usage.py \
+  --input measurements.csv \
+  --value-col amplitude \
+  --quality-col quality \
+  --valid-quality-flags good valid \
+  --spectral-config configs/spectral_analysis.json \
+  --sam-config configs/sam.json \
+  --output sam_spectral_segments.html
+```
+
+Sans `--quality-col` sur un CSV, aucun filtrage par flag n'est appliqué. Le mode
+synthétique emploie par défaut `value`, `quality` et `good`. Le programme imprime
+toujours la colonne signal, la colonne qualité et les flags acceptés avant le
+nettoyage, afin de rendre toute erreur de sélection visible.
+
 La table est volontairement limitée à `segment_id`, `time_frequency_area`,
 `duration`, `frequency_width`, `central_frequency`, `frequency_dispersion`,
 `integrated_spectral_power`, `mean_spectral_power_density`, `temporal_variation`,

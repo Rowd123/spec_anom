@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -42,6 +43,9 @@ def build_six_panel_figure(
     *,
     sam_device,
     postprocessed,
+    value_col,
+    quality_col,
+    valid_quality_flags,
 ):
     """Return the compact 2 x 3 diagnostic requested for visual assessment."""
     window = prepared.window
@@ -71,11 +75,13 @@ def build_six_panel_figure(
         line={"color": "#111827"},
     ), 1, 1)
     source = frame.loc[(frame.index >= window.time[0]) & (frame.index <= window.time[-1])]
-    invalid = ~source["quality"].eq("good")
-    figure.add_trace(go.Scatter(
-        x=source.index[invalid], y=source.loc[invalid, "value"], mode="markers",
-        name="invalid quality flag", marker={"symbol": "x", "size": 8, "color": "#dc2626"},
-    ), 1, 1)
+    if quality_col is not None:
+        invalid = ~source[quality_col].isin(valid_quality_flags)
+        figure.add_trace(go.Scatter(
+            x=source.index[invalid], y=source.loc[invalid, value_col], mode="markers",
+            name="invalid quality flag",
+            marker={"symbol": "x", "size": 8, "color": "#dc2626"},
+        ), 1, 1)
     figure.add_trace(go.Scatter(
         x=window.time[window.interpolated_mask], y=window.signal[window.interpolated_mask],
         mode="markers", name="interpolated", marker={"symbol": "diamond-open", "size": 8,
@@ -134,16 +140,66 @@ def _sam_diagnostics(segmentation):
     ]
 
 
+def load_measurements(path: Path) -> pd.DataFrame:
+    """Load a CSV whose first column is the time index.
+
+    Numeric indexes are retained as seconds. Text indexes are parsed as
+    datetimes so the original measurement times remain the pipeline axis.
+    """
+    frame = pd.read_csv(path, index_col=0)
+    if frame.empty:
+        raise ValueError(f"input CSV is empty: {path}")
+    if not pd.api.types.is_numeric_dtype(frame.index.dtype):
+        name = frame.index.name
+        parsed = pd.to_datetime(frame.index, errors="raise", utc=True)
+        frame.index = pd.DatetimeIndex(parsed, name=name)
+    return frame
+
+
+def _coerce_quality_flags(frame, quality_col, flags):
+    """Match CLI strings to a numeric quality column when necessary."""
+    if quality_col is None:
+        if flags:
+            raise ValueError("--valid-quality-flags requires --quality-col")
+        return None
+    if quality_col not in frame.columns:
+        raise KeyError(f"unknown quality column: {quality_col!r}")
+    if not flags:
+        raise ValueError("--valid-quality-flags is required with --quality-col")
+    if pd.api.types.is_numeric_dtype(frame[quality_col].dtype):
+        return tuple(pd.to_numeric(pd.Series(flags), errors="raise").tolist())
+    return tuple(flags)
+
+
 def main(output: Path, spectral_config_path: Path, sam_config_path: Path,
-         window_id: int = 0, postprocess: bool = False, show: bool = False):
+         window_id: int = 0, postprocess: bool = False, show: bool = False,
+         input_path: Path | None = None, value_col: str = "value",
+         quality_col: str | None = None, valid_quality_flags=None):
     """Run real automatic SAM once and write a standalone six-panel HTML file."""
     spectral_config = deepcopy(load_config(spectral_config_path, "spectral"))
     sam_config = deepcopy(load_config(sam_config_path, "sam"))
     spectral_config["representation"] = "stft"
     sam_config["segmentation_mode"] = "automatic"
 
-    frame, _ = demonstration_frame(spectral_config)
-    metadata, prepared = prepare_example_window(frame, spectral_config, window_id)
+    if input_path is None:
+        frame, _ = demonstration_frame(spectral_config)
+        selected_quality_col = "quality" if quality_col is None else quality_col
+        selected_flags = ("good",) if valid_quality_flags is None else tuple(valid_quality_flags)
+    else:
+        frame = load_measurements(input_path)
+        selected_quality_col = quality_col
+        selected_flags = _coerce_quality_flags(frame, selected_quality_col,
+                                                valid_quality_flags)
+    if value_col not in frame.columns:
+        raise KeyError(f"unknown value column: {value_col!r}")
+    print(f"Value column: {value_col}")
+    print(f"Quality column: {selected_quality_col}")
+    print(f"Accepted quality flags: {list(selected_flags) if selected_flags else []}")
+
+    metadata, prepared = prepare_example_window(
+        frame, spectral_config, window_id, value_col=value_col,
+        quality_col=selected_quality_col, valid_quality_flags=selected_flags,
+    )
     session = SAMSegmentationSession(sam_config)
     segmentation = session.segment(prepared.spectral)
     raw_segments = segmentation.raw_segments
@@ -173,7 +229,8 @@ def main(output: Path, spectral_config_path: Path, sam_config_path: Path,
 
     figure = build_six_panel_figure(
         frame, prepared, segmentation.image, raw_segments, selected_segments, features,
-        sam_device=session.device, postprocessed=postprocess,
+        sam_device=session.device, postprocessed=postprocess, value_col=value_col,
+        quality_col=selected_quality_col, valid_quality_flags=selected_flags,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.write_html(output, include_plotlyjs=True, full_html=True)
@@ -189,9 +246,19 @@ if __name__ == "__main__":
                         default=Path("configs/spectral_analysis.json"))
     parser.add_argument("--sam-config", type=Path, default=Path("configs/sam.json"))
     parser.add_argument("--output", type=Path, default=Path("sam_spectral_segments.html"))
+    parser.add_argument("--input", type=Path,
+                        help="CSV input; its first column is used as the time index")
+    parser.add_argument("--value-col", default="value",
+                        help="numeric signal column (default: value)")
+    parser.add_argument("--quality-col",
+                        help="quality column; omit for no quality filtering on CSV input")
+    parser.add_argument("--valid-quality-flags", nargs="+",
+                        help="values of --quality-col accepted as valid")
     parser.add_argument("--window-id", type=int, default=0)
     parser.add_argument("--postprocess", action="store_true")
     parser.add_argument("--show", action="store_true")
     arguments = parser.parse_args()
     main(arguments.output, arguments.spectral_config, arguments.sam_config,
-         arguments.window_id, arguments.postprocess, arguments.show)
+         arguments.window_id, arguments.postprocess, arguments.show,
+         arguments.input, arguments.value_col, arguments.quality_col,
+         arguments.valid_quality_flags)

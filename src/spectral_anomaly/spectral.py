@@ -66,6 +66,7 @@ class _TransformPlan:
 
 _PAD_MODES = {"reflect": "reflect", "constant": "constant", "zero": "constant", "edge": "edge"}
 _TRANSFORM_KEYS = {"window", "window_length", "n_fft", "hop_length", "center", "padtype", "dtype"}
+_FROM_CONFIG = object()
 
 
 def _build_plan(signal_size: int, sampling_frequency: float, options: Mapping[str, Any]) -> _TransformPlan:
@@ -214,8 +215,8 @@ def analyze_dataframe_windows(
     config: Mapping[str, Any],
     *,
     value_col,
-    quality_col=None,
-    valid_quality_flags=None,
+    quality_col=_FROM_CONFIG,
+    valid_quality_flags=_FROM_CONFIG,
 ) -> tuple[pd.DataFrame, dict[int, DataFrameSpectralWindow]]:
     """Clean, window and transform a timestamped DataFrame.
 
@@ -223,11 +224,18 @@ def analyze_dataframe_windows(
     :func:`prepare_analysis_windows`. The relative STFT offsets remain in
     ``item.spectral.times`` for physical durations, while ``absolute_times``
     retains the coordinate system and name of the supplied DataFrame index.
+    Omitted quality arguments use the config; explicitly passing
+    ``quality_col=None`` disables quality-flag filtering.
     """
     windowing = config["windowing"]
     quality = config["quality"]
-    selected_quality_col = quality_col if quality_col is not None else quality.get("quality_column")
-    selected_flags = valid_quality_flags if valid_quality_flags is not None else quality.get("valid_flags")
+    selected_quality_col = (
+        quality.get("quality_column") if quality_col is _FROM_CONFIG else quality_col
+    )
+    selected_flags = (
+        quality.get("valid_flags")
+        if valid_quality_flags is _FROM_CONFIG else valid_quality_flags
+    )
     sampling_period = config["sampling_period"]
     if pd.api.types.is_numeric_dtype(data.index.dtype) and not isinstance(sampling_period, (int, float)):
         sampling_period = pd.to_timedelta(sampling_period).total_seconds()

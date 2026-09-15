@@ -43,14 +43,22 @@ def demonstration_frame(config):
     return frame, relative_time
 
 
-def prepare_example_window(frame, config, window_id):
+def prepare_example_window(
+    frame,
+    config,
+    window_id,
+    *,
+    value_col="value",
+    quality_col="quality",
+    valid_quality_flags=("good",),
+):
     """Run the production quality preparation and select one accepted window."""
     metadata, windows = analyze_dataframe_windows(
         frame,
         config,
-        value_col="value",
-        quality_col="quality",
-        valid_quality_flags=("good",),
+        value_col=value_col,
+        quality_col=quality_col,
+        valid_quality_flags=valid_quality_flags,
     )
     if window_id not in metadata.index:
         raise ValueError(f"window-id {window_id} is outside 0..{len(metadata) - 1}")
