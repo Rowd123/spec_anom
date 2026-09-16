@@ -48,6 +48,12 @@ def test_chronological_split_no_leakage():
     a,b,c=chronological_split(frame,{"time_column":"window_start","train_fraction":.6,"calibration_fraction":.2,"evaluation_fraction":.2})
     assert set(a.index).isdisjoint(b.index|c.index) and a.window_start.max()<b.window_start.min()<c.window_start.min()
 
+def test_chronological_split_groups_segments_by_window():
+    frame=pd.DataFrame({"window_id":np.repeat(range(5),3),"window_start":np.repeat(range(5),3)})
+    splits=chronological_split(frame,{"time_column":"window_start","train_fraction":.4,"calibration_fraction":.2,"evaluation_fraction":.4})
+    membership={window_id:sum(window_id in set(split.window_id) for split in splits) for window_id in frame.window_id.unique()}
+    assert set(membership.values())=={1}
+
 def test_spot_and_persistence(tmp_path):
     rng=np.random.default_rng(2); spot=SPOT(q=.01,initial_quantile=.8,min_excesses=5).fit(rng.exponential(size=200))
     assert spot.predict([0,100]).tolist()==[False,True]

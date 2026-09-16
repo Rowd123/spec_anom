@@ -11,7 +11,8 @@ from .features import (FEATURE_MEANING, SEGMENT_FEATURE_COLUMNS,
 from .preprocessing import FeaturePreprocessor, chronological_split
 from .models import AtypicalityModel, HDBSCANModel, load_artifact, save_artifact
 from .spot import SPOT
-from .pipeline import ModelPipeline, dataframe_to_segments, train_models
+from .pipeline import (ModelPipeline, dataframe_to_segments,
+                       score_atypicality_splits, train_atypicality, train_models)
 from .segmentation import SAMSegmentationSession, SpectrumSegmentation, segment_spectrum
 
 from .energy import (
@@ -103,6 +104,7 @@ __all__ = [
     "extract_segment_features", "segments_to_dataframe", "FeaturePreprocessor",
     "chronological_split", "AtypicalityModel", "HDBSCANModel", "save_artifact",
     "load_artifact", "SPOT", "ModelPipeline", "dataframe_to_segments", "train_models",
+    "train_atypicality", "score_atypicality_splits",
     "SAMSegmentationSession", "SpectrumSegmentation", "segment_spectrum",
     "COMPONENT_FEATURE_COLUMNS",
     "DEFAULT_LOG1P_FEATURES",
