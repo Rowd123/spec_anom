@@ -215,3 +215,14 @@ de leurs axes avant de tracer les deux cartes. L'ancien exemple morphologique
 ```bash
 python -m pytest
 ```
+
+## Étapes persistantes et commandes
+
+La chaîne peut désormais être interrompue après chaque responsabilité : extraction
+vers Parquet, entraînement Isolation Forest, scoring par batch, ajustement ou
+prédiction HDBSCAN, puis calibration/application SPOT à partir des seuls scores.
+Chaque fichier tabulaire possède un manifeste versionné et chaque modèle embarque
+son prétraitement ajusté sur l'apprentissage. Les commandes exactes, le contrat
+des colonnes, la reprise et les limites GPU/mémoire sont décrits dans
+[`examples/independent_stages.md`](examples/independent_stages.md) et
+[`docs/intermediate_files.md`](docs/intermediate_files.md).

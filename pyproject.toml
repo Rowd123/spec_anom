@@ -23,6 +23,11 @@ test = ["pytest>=8"]
 # local PyTorch prerequisite without making the experiment mandatory.
 sam = ["torch>=2.5"]
 gpu = ["torch>=2.5", "cuml-cu12>=25.2; platform_system == 'Linux'"]
+io = ["pyarrow>=14"]
+hdbscan = ["hdbscan>=0.8.33"]
+
+[project.scripts]
+spectral-anomaly = "spectral_anomaly.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
