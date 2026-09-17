@@ -3,7 +3,7 @@
 `analyze_results.py` inspecte les tables, manifestes, modèles pickle et fenêtres
 NPZ produits en amont. Il n'entraîne aucun modèle et n'écrit que sous `--output`.
 Chaque rapport inclut `input_inspection.json`, qui décrit les structures réellement
-lues. L'absence d'une fenêtre NPZ n'empêche pas les rapports tabulaires : la galerie
+lues. L'absence d'une fenêtre NPZ n'empêche pas les rapports tabulaires : la galerie PDF
 affiche alors un avertissement pour le segment concerné.
 
 ## Isolation Forest et SHAP
@@ -52,8 +52,12 @@ HDBSCAN. Le médoïde est toujours une observation réelle ; au-delà de
 `--medoid-sample`, il est approximé sur un échantillon reproductible et cette
 méthode est inscrite dans le rapport.
 
-Sorties principales : tables CSV/HTML des scores, clusters, représentants et
-bruit/non-assignés ; galeries Plotly avec PSD/STFT et contour du masque ; projection
+Sorties principales : tables CSV et rapports PDF des scores, clusters, représentants et
+bruit/non-assignés ; galeries PDF avec PSD/STFT et contour du masque ; projection PDF
 des clusters ; distributions croisées score/membership ; importances et
 contributions SHAP lorsque demandées. Ni le score Isolation Forest ni la force
 d'appartenance HDBSCAN ne sont interprétés comme des probabilités.
+
+La génération PDF utilise Matplotlib. Si le module n'est pas présent, le script
+indique explicitement de l'installer avec `pip install matplotlib`. Aucun fichier
+HTML n'est généré.

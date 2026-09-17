@@ -7,7 +7,6 @@ model.  Every generated file is placed below ``--output``.
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import logging
 import pickle
@@ -215,9 +214,19 @@ def mask_index(row: pd.Series, window_rows: pd.DataFrame, count: int) -> int | N
     return None
 
 
-def spectral_figure(row: pd.Series, all_segments: pd.DataFrame, windows: Path | None,
-                    title: str):
-    import plotly.graph_objects as go
+def require_matplotlib():
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_pdf import PdfPages
+    except ImportError as exc:
+        raise AnalysisError(
+            "PDF generation requires matplotlib; install it with `pip install matplotlib`"
+        ) from exc
+    return plt, PdfPages
+
+
+def spectral_panel(row: pd.Series, all_segments: pd.DataFrame, windows: Path | None):
+    """Load one requested window lazily and return arrays for a PDF panel."""
     if windows is None:
         return None, "windows directory not supplied"
     path = npz_path(windows, row["window_id"])
@@ -231,49 +240,73 @@ def spectral_figure(row: pd.Series, all_segments: pd.DataFrame, windows: Path | 
             time_name = "times" if "times" in names else "time" if "time" in names else None
             if not spectral_name or not frequency_name or not time_name or "masks" not in names:
                 return None, f"{path.name} lacks PSD/STFT, axes, or masks; keys={sorted(names)}"
-            values = np.asarray(data[spectral_name]); values = np.abs(values) ** (2 if spectral_name == "stft" else 1)
-            frequencies = np.asarray(data[frequency_name]); times = np.asarray(data[time_name]); masks = np.asarray(data["masks"], bool)
+            values = np.asarray(data[spectral_name])
+            values = np.abs(values) ** (2 if spectral_name == "stft" else 1)
+            frequencies = np.asarray(data[frequency_name])
+            times = np.asarray(data[time_name])
+            masks = np.asarray(data["masks"], bool)
             window_rows = all_segments.loc[all_segments["window_id"].eq(row["window_id"])]
             index = mask_index(row, window_rows, len(masks))
             if index is None or masks[index].shape != values.shape:
                 return None, f"cannot map segment_id={row['segment_id']} to a compatible mask in {path.name}"
-            mask = masks[index]
+            return (np.log1p(np.maximum(values, 0)), frequencies, times, masks[index]), None
     except Exception as exc:
         return None, f"cannot read {path}: {exc}"
-    z = np.log1p(np.maximum(values, 0))
-    figure = go.Figure(go.Heatmap(x=times, y=frequencies, z=z, colorscale="Viridis", colorbar_title="log1p power"))
-    contour = np.where(mask, 1.0, np.nan)
-    figure.add_trace(go.Contour(x=times, y=frequencies, z=contour, contours={"start": .5, "end": .5},
-                                line={"color": "red", "width": 3}, showscale=False, hoverinfo="skip", name="segment mask"))
-    figure.update_layout(title=title, xaxis_title="Time (s)", yaxis_title="Frequency (Hz)", height=520)
-    return figure, None
 
 
 def write_gallery(rows: pd.DataFrame, segments: pd.DataFrame, features: Iterable[str],
-                  windows: Path | None, output: Path, title: str, score_column: str | None = None) -> None:
-    import plotly.io as pio
-    blocks = [f"<h1>{html.escape(title)}</h1>"]
-    include_js: bool | str = "cdn"
-    for _, row in rows.iterrows():
-        identity = f"window={row.get('window_id')} segment={row.get('segment_id')}"
-        heading = identity + (f" score={row[score_column]:.6g}" if score_column else "")
-        figure, warning = spectral_figure(row, segments, windows, heading)
-        columns = [name for name in (*TIME_COLUMNS, "frequency_min", "frequency_max", *features) if name in row.index]
-        blocks.append(f"<section><h2>{html.escape(heading)}</h2>{row[columns].to_frame('value').to_html(border=0)}")
-        if figure is not None:
-            blocks.append(pio.to_html(figure, full_html=False, include_plotlyjs=include_js)); include_js = False
-        else:
-            blocks.append(f"<p class='warning'>{html.escape(warning or 'visual unavailable')}</p>")
-        blocks.append("</section>")
-    document = "<!doctype html><meta charset='utf-8'><title>Analysis gallery</title><style>body{font-family:sans-serif;max-width:1400px;margin:auto}section{border-top:1px solid #ccc;padding:1rem}.warning{color:#9b4d00}table{text-align:right}</style>" + "".join(blocks)
-    (output / "gallery.html").write_text(document, encoding="utf8")
+                  windows: Path | None, output: Path, title: str,
+                  score_column: str | None = None) -> None:
+    """Write a multi-page PDF, one selected segment per page."""
+    plt, PdfPages = require_matplotlib()
+    with PdfPages(output / "gallery.pdf") as pdf:
+        if rows.empty:
+            figure = plt.figure(figsize=(11.7, 8.3)); figure.text(.5, .5, "No segment selected", ha="center")
+            pdf.savefig(figure); plt.close(figure)
+        for _, row in rows.iterrows():
+            identity = f"window={row.get('window_id')} segment={row.get('segment_id')}"
+            heading = identity + (f" score={row[score_column]:.6g}" if score_column else "")
+            panel, warning = spectral_panel(row, segments, windows)
+            figure = plt.figure(figsize=(11.7, 8.3), constrained_layout=True)
+            grid = figure.add_gridspec(2, 1, height_ratios=(3, 2))
+            axis = figure.add_subplot(grid[0])
+            if panel is None:
+                axis.axis("off"); axis.text(.5, .5, warning or "visual unavailable", ha="center", va="center", color="darkorange", wrap=True)
+            else:
+                values, frequencies, times, mask = panel
+                image = axis.pcolormesh(times, frequencies, values, shading="auto", cmap="viridis")
+                axis.contour(times, frequencies, mask.astype(float), levels=[.5], colors=["red"], linewidths=2)
+                figure.colorbar(image, ax=axis, label="log1p power")
+                axis.set(xlabel="Time (s)", ylabel="Frequency (Hz)")
+            axis.set_title(f"{title}\n{heading}")
+            info = figure.add_subplot(grid[1]); info.axis("off")
+            columns = [name for name in (*TIME_COLUMNS, "frequency_min", "frequency_max", *features) if name in row.index]
+            lines = [f"{name}: {row[name]}" for name in columns]
+            info.text(0, 1, "\n".join(lines), va="top", family="monospace", fontsize=8, wrap=True)
+            pdf.savefig(figure); plt.close(figure)
 
 
-def write_table_html(frame: pd.DataFrame, output: Path, name: str, title: str) -> None:
+def write_table_pdf(frame: pd.DataFrame, output: Path, name: str, title: str) -> None:
+    """Keep machine-readable CSV and provide a paginated human-readable PDF."""
     frame.to_csv(output / f"{name}.csv", index=False)
-    document = f"<!doctype html><meta charset='utf-8'><title>{html.escape(title)}</title><h1>{html.escape(title)}</h1>" + frame.to_html(index=False, border=0)
-    (output / f"{name}.html").write_text(document, encoding="utf8")
-
+    plt, PdfPages = require_matplotlib()
+    printable = frame.copy()
+    for column in printable:
+        printable[column] = printable[column].map(lambda value: str(value)[:36])
+    rows_per_page = 25
+    with PdfPages(output / f"{name}.pdf") as pdf:
+        page_count = max(1, (len(printable) + rows_per_page - 1) // rows_per_page)
+        for page in range(page_count):
+            chunk = printable.iloc[page * rows_per_page:(page + 1) * rows_per_page]
+            figure, axis = plt.subplots(figsize=(16.5, 11.7)); axis.axis("off")
+            axis.set_title(f"{title} — page {page + 1}/{page_count}", fontsize=14, pad=16)
+            if chunk.empty:
+                axis.text(.5, .5, "No rows", ha="center")
+            else:
+                table = axis.table(cellText=chunk.to_numpy(), colLabels=chunk.columns,
+                                   loc="center", cellLoc="left")
+                table.auto_set_font_size(False); table.set_fontsize(6); table.scale(1, 1.25)
+            pdf.savefig(figure, bbox_inches="tight"); plt.close(figure)
 
 def load_iforest(args, output: Path):
     segments, segment_manifest = read_table(args.segments, "segments")
@@ -295,7 +328,7 @@ def run_iforest(args) -> None:
     output = prepare_output(args.output)
     segments, merged, score_column, preprocessor, model, features, _ = load_iforest(args, output)
     top = merged.nlargest(args.top_n, score_column).copy()
-    write_table_html(top, output, "top_segments", "Isolation Forest — highest atypicality scores")
+    write_table_pdf(top, output, "top_segments", "Isolation Forest — highest atypicality scores")
     write_gallery(top, segments, features, args.windows, output,
                   "Isolation Forest — highest atypicality scores", score_column)
     if args.shap:
@@ -315,8 +348,7 @@ def explain_shap(frame: pd.DataFrame, local: pd.DataFrame, preprocessor: Any, mo
         import shap
     except ImportError as exc:
         raise AnalysisError("SHAP is not installed; install it with `pip install shap`") from exc
-    import plotly.express as px
-    import plotly.graph_objects as go
+    plt, _ = require_matplotlib()
     rng = np.random.default_rng(seed)
     size = min(sample_count, len(frame)); indices = rng.choice(len(frame), size=size, replace=False)
     explained = frame.iloc[np.sort(indices)]
@@ -335,10 +367,20 @@ def explain_shap(frame: pd.DataFrame, local: pd.DataFrame, preprocessor: Any, mo
     if shap_values.ndim == 3: shap_values = shap_values[..., 0]
     importance = np.abs(shap_values).mean(axis=0)
     global_table = pd.DataFrame({"feature": features, "mean_abs_shap": importance}).sort_values("mean_abs_shap", ascending=False)
-    write_table_html(global_table, output, "shap_global_importance", "Global model-agnostic SHAP importance")
-    px.bar(global_table, x="mean_abs_shap", y="feature", orientation="h", title="Mean absolute SHAP contribution").write_html(output / "shap_global_importance_plot.html")
-    long = pd.DataFrame(shap_values, columns=features).assign(sample=np.arange(size)).melt(id_vars="sample", var_name="feature", value_name="shap_value")
-    px.strip(long, x="shap_value", y="feature", color="feature", title="SHAP contribution distribution").write_html(output / "shap_beeswarm.html")
+    write_table_pdf(global_table, output, "shap_global_importance", "Global model-agnostic SHAP importance")
+    figure, axis = plt.subplots(figsize=(9, 6))
+    ordered = global_table.sort_values("mean_abs_shap")
+    axis.barh(ordered.feature, ordered.mean_abs_shap)
+    axis.set(title="Mean absolute SHAP contribution", xlabel="mean(|SHAP value|)")
+    figure.tight_layout(); figure.savefig(output / "shap_global_importance_plot.pdf"); plt.close(figure)
+    figure, axis = plt.subplots(figsize=(10, max(5, len(features) * .55)))
+    generator = np.random.default_rng(seed)
+    for feature_index, feature in enumerate(features):
+        jitter = generator.normal(0, .08, size=len(shap_values))
+        axis.scatter(shap_values[:, feature_index], feature_index + jitter, s=10, alpha=.5)
+    axis.axvline(0, color="black", linewidth=.7); axis.set_yticks(range(len(features)), features)
+    axis.set(title="SHAP contribution distribution", xlabel="SHAP contribution")
+    figure.tight_layout(); figure.savefig(output / "shap_beeswarm.pdf"); plt.close(figure)
     local_values = local.loc[:, features].to_numpy(float)
     local_shap = np.asarray(explainer.shap_values(local_values, nsamples=evals), dtype=float)
     if local_shap.ndim == 3: local_shap = local_shap[..., 0]
@@ -347,10 +389,14 @@ def explain_shap(frame: pd.DataFrame, local: pd.DataFrame, preprocessor: Any, mo
         table = pd.DataFrame({"feature": features, "raw_value": local_values[position], "shap_contribution": local_shap[position]}).sort_values("shap_contribution")
         name = f"window-{row['window_id']}-segment-{row['segment_id']}"
         table.to_csv(local_dir / f"{name}.csv", index=False)
-        figure = go.Figure(go.Waterfall(orientation="h", y=table.feature, x=table.shap_contribution,
-                                       base=float(np.asarray(explainer.expected_value).reshape(-1)[0])))
-        figure.update_layout(title=f"{name}: score={row[score_column]:.6g}; exact f(X)=-score_samples(preprocess(X))", xaxis_title="Atypicality score contribution")
-        figure.write_html(local_dir / f"{name}.html")
+        figure, axis = plt.subplots(figsize=(10, max(5, len(table) * .55)))
+        colors = np.where(table.shap_contribution.to_numpy() >= 0, "#d62728", "#1f77b4")
+        axis.barh(table.feature, table.shap_contribution, color=colors)
+        axis.axvline(0, color="black", linewidth=.8)
+        base = float(np.asarray(explainer.expected_value).reshape(-1)[0])
+        axis.set(title=f"{name}: score={row[score_column]:.6g}; base={base:.6g}",
+                 xlabel="Contribution to -score_samples(saved preprocessing(X))")
+        figure.tight_layout(); figure.savefig(local_dir / f"{name}.pdf"); plt.close(figure)
 
 
 def load_hdbscan(args, output: Path):
@@ -390,7 +436,7 @@ def representatives(frame: pd.DataFrame, matrix: np.ndarray, sample_limit: int,
 
 def add_projection(frame: pd.DataFrame, matrix: np.ndarray, reps: pd.DataFrame,
                    output: Path, use_umap: bool, seed: int) -> pd.DataFrame:
-    import plotly.express as px
+    plt, _ = require_matplotlib()
     def pca(values: np.ndarray) -> np.ndarray:
         centered = values - values.mean(axis=0, keepdims=True)
         _, _, right = np.linalg.svd(centered, full_matrices=False)
@@ -412,10 +458,18 @@ def add_projection(frame: pd.DataFrame, matrix: np.ndarray, reps: pd.DataFrame,
     projected = frame.copy(); projected["projection_x"] = projection[:, 0]; projected["projection_y"] = projection[:, 1]
     projected["cluster"] = projected.cluster_label.astype(str).where(projected.cluster_label.ne(-1), "-1 noise / unassigned")
     hover = [name for name in ("window_id", "segment_id", "membership_strength", "score", "atypicality_score") if name in projected]
-    figure = px.scatter(projected, x="projection_x", y="projection_y", color="cluster", hover_data=hover, title=f"{method} visualization (not the HDBSCAN fitting space)")
+    figure, axis = plt.subplots(figsize=(11, 8))
+    for label, part in projected.groupby("cluster", sort=True):
+        marker = "x" if label == "-1 noise / unassigned" else "o"
+        axis.scatter(part.projection_x, part.projection_y, s=18, alpha=.65, marker=marker, label=label)
     if len(reps):
-        positions = reps["_position"].astype(int).to_numpy(); figure.add_scatter(x=projection[positions, 0], y=projection[positions, 1], mode="markers+text", text=reps.cluster_label.astype(str), marker={"symbol": "x", "size": 14, "color": "black"}, name="real representatives / medoids")
-    figure.write_html(output / "cluster_projection.html")
+        positions = reps["_position"].astype(int).to_numpy()
+        axis.scatter(projection[positions, 0], projection[positions, 1], marker="*", s=170,
+                     facecolors="none", edgecolors="black", linewidths=1.4, label="real representatives / medoids")
+        for position, label in zip(positions, reps.cluster_label):
+            axis.annotate(str(label), projection[position], xytext=(4, 4), textcoords="offset points")
+    axis.set(title=f"{method} visualization (not the HDBSCAN fitting space)", xlabel=f"{method} 1", ylabel=f"{method} 2")
+    axis.legend(fontsize=7, loc="best"); figure.tight_layout(); figure.savefig(output / "cluster_projection.pdf"); plt.close(figure)
     return projected
 
 
@@ -433,11 +487,11 @@ def run_hdbscan(args) -> None:
     statistics = merged.groupby("cluster_label")[list(features)].describe()
     statistics.columns = [f"{feature}_{statistic}" for feature, statistic in statistics.columns]
     statistics = statistics.reset_index()
-    write_table_html(statistics, output, "cluster_feature_statistics", "HDBSCAN cluster feature statistics")
+    write_table_pdf(statistics, output, "cluster_feature_statistics", "HDBSCAN cluster feature statistics")
     summary = merged.groupby("cluster_label", as_index=False).agg(segment_count=("segment_id", "size"), mean_membership_strength=("membership_strength", "mean"))
     summary["medoid_method"] = summary.cluster_label.map(methods).fillna("not applicable")
-    write_table_html(summary, output, "cluster_summary", "HDBSCAN cluster summary")
-    write_table_html(reps.drop(columns="_position"), output, "cluster_representatives", "Real cluster representatives")
+    write_table_pdf(summary, output, "cluster_summary", "HDBSCAN cluster summary")
+    write_table_pdf(reps.drop(columns="_position"), output, "cluster_representatives", "Real cluster representatives")
     write_gallery(reps, segments, features, args.windows, output, "HDBSCAN representatives")
     add_projection(merged, matrix, reps, output, args.umap, args.seed)
     noise = merged.loc[merged.cluster_label.eq(-1)].copy()
@@ -447,7 +501,7 @@ def run_hdbscan(args) -> None:
         noise_sample = noise.sample(min(args.noise_sample, len(noise)), random_state=args.seed)
         if score_column:
             noise_sample = pd.concat([noise.nlargest(min(args.noise_extremes, len(noise)), score_column), noise.nsmallest(min(args.noise_extremes, len(noise)), score_column), noise_sample]).drop_duplicates(keys)
-        write_table_html(noise.describe(include="all").transpose().reset_index(names="feature"), output, "noise_feature_statistics", "HDBSCAN noise / unassigned points")
+        write_table_pdf(noise.describe(include="all").transpose().reset_index(names="feature"), output, "noise_feature_statistics", "HDBSCAN noise / unassigned points")
         create_child(output, "noise")
         write_gallery(noise_sample, segments, features, args.windows, output / "noise", "HDBSCAN noise / unassigned points", score_column)
 
@@ -465,18 +519,27 @@ def run_combined(args) -> None:
     compatible_manifests(cm, sm, compare_model=False)
     merged, _ = merge_artifacts(clusters, scores, "clusters", "scores")
     score = choose_score_column(merged)
-    import plotly.express as px
-    hover = [name for name in ("window_id", "segment_id", "cluster_label") if name in merged]
-    px.scatter(merged, x="membership_strength", y=score, color=merged.cluster_label.astype(str), hover_data=hover,
-               title="Isolation Forest score vs HDBSCAN membership strength (neither is a probability)").write_html(output / "score_vs_membership.html")
-    px.box(merged, x="cluster_label", y=score, points="outliers", title="Isolation Forest score distribution by HDBSCAN partition").write_html(output / "score_by_cluster.html")
+    plt, _ = require_matplotlib()
+    figure, axis = plt.subplots(figsize=(10, 7))
+    for label, part in merged.groupby("cluster_label", sort=True):
+        name = "-1 noise / unassigned" if label == -1 else f"cluster {label}"
+        axis.scatter(part.membership_strength, part[score], s=18, alpha=.65, label=name)
+    axis.set(title="Isolation Forest score vs HDBSCAN membership strength (neither is a probability)",
+             xlabel="membership strength", ylabel="Isolation Forest atypicality score")
+    axis.legend(fontsize=7); figure.tight_layout(); figure.savefig(output / "score_vs_membership.pdf"); plt.close(figure)
+    labels = sorted(merged.cluster_label.unique())
+    figure, axis = plt.subplots(figsize=(max(8, len(labels) * .7), 7))
+    axis.boxplot([merged.loc[merged.cluster_label.eq(label), score].dropna() for label in labels], labels=labels)
+    axis.set(title="Isolation Forest score distribution by HDBSCAN partition",
+             xlabel="cluster label (-1 = noise / unassigned)", ylabel="Isolation Forest atypicality score")
+    figure.tight_layout(); figure.savefig(output / "score_by_cluster.pdf"); plt.close(figure)
     noise = merged.loc[merged.cluster_label.eq(-1)]
-    write_table_html(noise.sort_values(score, ascending=False), output, "noise_scores", "HDBSCAN noise / unassigned points — Isolation Forest scores")
+    write_table_pdf(noise.sort_values(score, ascending=False), output, "noise_scores", "HDBSCAN noise / unassigned points — Isolation Forest scores")
     quantile = merged[score].quantile(args.high_score_quantile)
     strength = merged.membership_strength.quantile(args.strong_membership_quantile)
     categories = pd.DataFrame({"category": ["high score + noise", "high score + strong cluster membership", "low score + noise", "low score + strong cluster membership"],
                                "count": [int((merged[score].ge(quantile) & merged.cluster_label.eq(-1)).sum()), int((merged[score].ge(quantile) & merged.cluster_label.ge(0) & merged.membership_strength.ge(strength)).sum()), int((merged[score].lt(quantile) & merged.cluster_label.eq(-1)).sum()), int((merged[score].lt(quantile) & merged.cluster_label.ge(0) & merged.membership_strength.ge(strength)).sum())]})
-    write_table_html(categories, output, "combined_categories", "Complementarity categories")
+    write_table_pdf(categories, output, "combined_categories", "Complementarity categories")
     inspect_inputs(output, clusters=(args.clusters, clusters, cm), scores=(args.scores, scores, sm))
 
 
