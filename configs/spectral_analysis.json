@@ -6,8 +6,10 @@
   "signal_preprocessing": {"remove_mean": true},
   "representation": "stft",
   "device": "auto",
-  "transform": {"window": "hann", "window_length": 128, "n_fft": 256, "hop_length": 4, "center": true, "padtype": "reflect", "dtype": "float32"},
+  "transform": {"window": "hann", "window_length": 128, "n_fft": 256, "hop_length": 4, "center": true, "padtype": "reflect", "dtype": "float32", "frequency_min": 0.0, "frequency_max": null},
+  "ssq_stft": {"gamma": null, "squeezing": "sum", "batch_size": 8},
   "msst": {"iteration_count": 3, "gamma": null},
+  "exclusions": {"events": [], "event_id_column": null, "unknown_id_policy": "warning"},
   "psd": {"scaling": "density", "one_sided": true},
   "visualization": {"compare_representations": false, "output": "spectral_analysis.html"}
 }

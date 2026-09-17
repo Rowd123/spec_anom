@@ -39,8 +39,8 @@ AUTOMATIC_MASK_DEFAULTS: dict[str, object] = {
 
 def validate_spectral_representation(representation: object) -> str:
     """Validate and return the spectral representation selected for SAM."""
-    if representation not in {"stft", "msst"}:
-        raise ValueError("representation must be either 'stft' or 'msst'")
+    if representation not in {"stft", "ssq_stft", "msst"}:
+        raise ValueError("representation must be 'stft', 'ssq_stft', or 'msst'")
     return str(representation)
 
 

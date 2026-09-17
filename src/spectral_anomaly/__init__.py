@@ -4,6 +4,7 @@ from .devices import DeviceSelection, cuda_available, resolve_backend, resolve_d
 from .spectral import (DataFrameSpectralWindow, GEOMETRIC_FEATURES,
                        PHYSICAL_STFT_FEATURES, SpectralResult,
                        analyze_dataframe_windows, analyze_spectrum,
+                       analyze_spectra, spectral_signature,
                        validate_features)
 from .masks import Segment, containment, mask_iou, postprocess_masks
 from .features import (FEATURE_MEANING, SEGMENT_FEATURE_COLUMNS,
@@ -14,6 +15,8 @@ from .spot import SPOT
 from .pipeline import (ModelPipeline, dataframe_to_segments,
                        score_atypicality_splits, train_atypicality, train_models)
 from .segmentation import SAMSegmentationSession, SpectrumSegmentation, segment_spectrum
+from .exclusions import (excluded_observations, exclusion_signature,
+                         filter_excluded_segments, validate_exclusions)
 
 from .energy import (
     WindowData,
@@ -98,6 +101,7 @@ __all__ = [
     "load_config", "load_configs", "validate_config", "DeviceSelection", "cuda_available",
     "resolve_backend", "resolve_device", "SpectralResult", "DataFrameSpectralWindow",
     "analyze_spectrum", "analyze_dataframe_windows",
+    "analyze_spectra", "spectral_signature",
     "validate_features", "GEOMETRIC_FEATURES", "PHYSICAL_STFT_FEATURES", "Segment",
     "containment", "mask_iou", "postprocess_masks", "FEATURE_MEANING",
     "SEGMENT_FEATURE_COLUMNS",
@@ -106,6 +110,8 @@ __all__ = [
     "load_artifact", "SPOT", "ModelPipeline", "dataframe_to_segments", "train_models",
     "train_atypicality", "score_atypicality_splits",
     "SAMSegmentationSession", "SpectrumSegmentation", "segment_spectrum",
+    "excluded_observations", "exclusion_signature", "filter_excluded_segments",
+    "validate_exclusions",
     "COMPONENT_FEATURE_COLUMNS",
     "DEFAULT_LOG1P_FEATURES",
     "CandidateStructure",

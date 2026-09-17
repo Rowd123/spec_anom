@@ -211,6 +211,7 @@ def prepare_analysis_windows(
     min_valid_ratio: float = 0.9,
     min_valid_samples: int | None = None,
     max_interpolation_gap: int = 3,
+    excluded_times: Iterable[object] | None = None,
 ) -> tuple[pd.DataFrame, dict[int, WindowData]]:
     """Prepare every quality-valid window without making an anomaly decision.
 
@@ -230,8 +231,12 @@ def prepare_analysis_windows(
     )
     prepared = _prepare_dataframe(data, value_col, quality_col, valid_quality_flags)
     regular, _ = _regularize_signal(prepared, sampling_period)
-    raw = regular["__signal"].to_numpy(dtype=float)
-    observed = regular["__observed"].to_numpy(dtype=bool)
+    raw = regular["__signal"].to_numpy(dtype=float, copy=True)
+    observed = regular["__observed"].to_numpy(dtype=bool, copy=True)
+    excluded_values = () if excluded_times is None else excluded_times
+    excluded = np.asarray(regular.index.isin(list(excluded_values)), dtype=bool)
+    raw[excluded] = np.nan
+    observed[excluded] = False
     filled, interpolated = _interpolate_small_gaps(raw, max_interpolation_gap)
     taper = np.asarray(get_window(window_name, window_size, fftbins=False), dtype=float)
     if not np.any(taper) or np.dot(taper, taper) == 0:
@@ -250,6 +255,8 @@ def prepare_analysis_windows(
         ratio = valid_count / window_size
         longest = _longest_missing_run(obs)
         reasons: list[str] = []
+        if excluded[start:stop].any():
+            reasons.append("excluded_event")
         if ratio < min_valid_ratio:
             reasons.append("insufficient_valid_ratio")
         if valid_count < required:
@@ -280,6 +287,7 @@ def prepare_analysis_windows(
                 "interpolated_samples": int(interp.sum()),
                 "valid_ratio": ratio,
                 "longest_missing_run": longest,
+                "excluded_samples": int(excluded[start:stop].sum()),
                 "accepted": accepted,
                 "rejection_reason": ";".join(reasons) if reasons else None,
             }

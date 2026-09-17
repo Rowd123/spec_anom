@@ -3,7 +3,7 @@
 Pipeline modulaire de segmentation et d'analyse atypique de séries temporelles :
 
 ```text
-DataFrame → qualité/fenêtres → STFT ou MSST → image SAM
+DataFrame → qualité/fenêtres/exclusions → STFT, SST-STFT ou MSST → image SAM
           → SAM automatique ou guidé → fusion → caractéristiques
           ├─ Isolation Forest → score d'atypicité → décision SPOT
           └─ HDBSCAN → identifiant de cluster
@@ -69,9 +69,14 @@ trame. Les seules options actuellement acceptées sont `density` et
 
 Les devices spectraux acceptent `auto`, `cpu`, `cuda` ou `cuda:N`. La STFT CUDA
 utilise réellement `torch.stft` et conserve les tenseurs sur GPU jusqu'au résultat ;
-la MSST actuelle (réassignation sur la grille STFT, accélérée par Numba) est explicitement CPU et
+la SST-STFT emploie réellement `ssqueezepy.ssq_stft` et son backend PyTorch/CuPy.
+La MSST actuelle (réassignation multi-itérative sur la grille STFT, accélérée par Numba) est explicitement CPU et
 `auto` retombe donc sur CPU. Demander CUDA pour MSST produit une erreur plutôt que
 de simuler une accélération. SAM utilise le device du modèle PyTorch.
+
+Les paramètres, la distinction scientifique SST/MSST, les batchs spectraux et SAM,
+les unités d'énergie et les exclusions d'étude sont détaillés dans
+[`docs/spectral_methods_and_exclusions.md`](docs/spectral_methods_and_exclusions.md).
 
 Les modèles acceptent `backend=auto|cpu|gpu`. CPU utilise scikit-learn ; GPU utilise
 les implémentations cuML d'Isolation Forest et HDBSCAN. `auto` choisit cuML seulement

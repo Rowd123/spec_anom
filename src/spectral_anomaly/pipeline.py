@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
 from time import perf_counter
 
@@ -14,7 +15,9 @@ from .masks import postprocess_masks
 from .models import AtypicalityModel
 from .preprocessing import FeaturePreprocessor, chronological_split
 from .segmentation import SAMSegmentationSession
-from .spectral import analyze_spectrum, validate_features
+from .spectral import analyze_spectra, validate_features
+from .spectral import spectral_signature
+from .exclusions import excluded_observations, exclusion_signature
 
 
 _FROM_CONFIG = object()
@@ -45,6 +48,7 @@ def dataframe_to_segments(
     predictor=None,
     return_window_metadata=False,
     log_every=100,
+    source_id=None,
 ):
     """Run quality-aware window preparation, STFT, SAM, and feature extraction."""
     if not isinstance(log_every, int) or isinstance(log_every, bool) or log_every < 1:
@@ -56,6 +60,7 @@ def dataframe_to_segments(
     if valid_quality_flags is _FROM_CONFIG:
         valid_quality_flags = quality.get("valid_flags")
     pipeline_started = perf_counter()
+    excluded = excluded_observations(frame, spectral_config["exclusions"], source_id=source_id)
     LOGGER.info("[data-preparation] starting quality control and window preparation")
     metadata, windows = prepare_analysis_windows(
         frame,
@@ -67,6 +72,7 @@ def dataframe_to_segments(
         max_interpolation_gap=quality["max_interpolation_gap"],
         quality_col=quality_col,
         valid_quality_flags=valid_quality_flags,
+        excluded_times=frame.index[excluded],
     )
     preparation_duration = _elapsed(pipeline_started)
     rejection_counts = metadata.loc[~metadata["accepted"], "rejection_reason"].value_counts()
@@ -99,11 +105,17 @@ def dataframe_to_segments(
         "[windows] starting STFT, SAM segmentation, mask post-processing, and feature extraction: accepted=%d",
         total,
     )
-    for window_id, item in windows.items():
+    window_items = list(windows.items())
+    spectral_started = perf_counter()
+    spectra = analyze_spectra([item.signal for _, item in window_items], spectral_config)
+    spectral_duration = _elapsed(spectral_started)
+    LOGGER.info("[spectral] representation=%s device=%s windows=%d batch_size=%s duration=%.3fs",
+                spectral_config["representation"], spectral_config["device"], len(spectra),
+                spectral_config["ssq_stft"]["batch_size"] if spectral_config["representation"] == "ssq_stft" else 1,
+                spectral_duration)
+    for (window_id, item), spectrum in zip(window_items, spectra):
         window_started = perf_counter()
-        stft_started = perf_counter()
-        spectrum = analyze_spectrum(item.signal, spectral_config)
-        stft_duration = _elapsed(stft_started)
+        stft_duration = spectral_duration / max(len(spectra), 1)
         stft_total += stft_duration
         sam_inference_started = perf_counter()
         segmentation = session.segment(spectrum)
@@ -158,6 +170,26 @@ def dataframe_to_segments(
                 processed_without_segments, segments_kept, elapsed, rate, remaining,
             )
     segments = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    if not segments.empty:
+        segments["spectral_representation"] = spectral_config["representation"]
+        segments["spectral_parameters"] = json.dumps({
+            "transform": spectral_config["transform"],
+            "ssq_stft": spectral_config["ssq_stft"],
+            "msst": spectral_config["msst"],
+        }, sort_keys=True)
+        segments["study_exclusions"] = json.dumps(spectral_config["exclusions"], sort_keys=True)
+        segments["spectral_signature"] = spectral_signature(spectral_config)
+        segments["exclusion_signature"] = exclusion_signature(spectral_config["exclusions"])
+        segments["source_id"] = source_id
+        ends = metadata["end_time"]
+        segments["window_end"] = segments["window_id"].map(ends)
+        event_column = spectral_config["exclusions"]["event_id_column"]
+        if event_column and event_column in frame:
+            event_values = {}
+            for window_id, row in metadata.iterrows():
+                inside = frame.loc[(frame.index >= row.start_time) & (frame.index <= row.end_time), event_column]
+                event_values[window_id] = tuple(pd.unique(inside.dropna()))
+            segments[event_column] = segments["window_id"].map(event_values)
     LOGGER.info(
         "[feature-extraction] finished: segments=%d accepted_windows=%d "
         "windows_without_segment=%d stage_durations=%s processing_duration=%.3fs "
@@ -196,14 +228,24 @@ class ModelPipeline:
 
     anomaly_preprocessor: FeaturePreprocessor
     atypicality: AtypicalityModel
+    spectral_signature: str | None = None
+    exclusion_signature: str | None = None
 
     def score_atypicality(self, frame):
         """Return raw ``-score_samples`` values (higher means more atypical)."""
+        self._validate_compatibility(frame)
         _assert_finite_features(
             frame, self.anomaly_preprocessor.features, label="scoring data"
         )
         transformed = self.anomaly_preprocessor.transform(frame)
         return self.atypicality.score(transformed)
+
+    def _validate_compatibility(self, frame):
+        for column, expected in (("spectral_signature", self.spectral_signature),
+                                 ("exclusion_signature", self.exclusion_signature)):
+            if expected is None: continue
+            if column not in frame or set(frame[column].dropna().astype(str)) != {expected}:
+                raise ValueError(f"scoring data has incompatible {column}")
 
     def analyze(self, frame):
         """Attach only the continuous atypicality score to segment rows."""
@@ -217,10 +259,19 @@ def train_atypicality(frame, config):
     train, calibration, evaluation = chronological_split(frame, config["split"])
     preprocessing = config["preprocessing"]
     features = tuple(preprocessing["atypicality_features"])
+    signatures = {}
+    for column in ("spectral_signature", "exclusion_signature"):
+        if column in train:
+            values = set(train[column].dropna().astype(str))
+            if len(values) != 1: raise ValueError(f"training data mixes incompatible {column} values")
+            signatures[column] = next(iter(values))
+    representations = set(train["spectral_representation"].dropna()) if "spectral_representation" in train else {"stft"}
+    if len(representations) != 1:
+        raise ValueError("training data mixes incompatible spectral representations")
     LOGGER.info("[split] features=%s", list(features))
     for name, split in zip(("train", "calibration", "evaluation"), (train, calibration, evaluation)):
         LOGGER.info("[split] partition=%s windows=%d segments=%d", name, _window_count(split), len(split))
-    validate_features(features, "stft")
+    validate_features(features, next(iter(representations)))
     if train.empty:
         raise ValueError("the chronological train split contains no segments")
     for name, split in (
@@ -248,7 +299,8 @@ def train_atypicality(frame, config):
         backend=backend, model_type=model_type, **model_config
     ).fit(transformed_train)
     LOGGER.info("[isolation-forest-fit] finished in %.3fs resolved_backend=%s", _elapsed(fit_started), atypicality.backend)
-    return ModelPipeline(preprocessor, atypicality), (train, calibration, evaluation)
+    return ModelPipeline(preprocessor, atypicality, signatures.get("spectral_signature"),
+                         signatures.get("exclusion_signature")), (train, calibration, evaluation)
 
 
 def score_atypicality_splits(pipeline, splits):

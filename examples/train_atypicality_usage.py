@@ -28,6 +28,7 @@ def _parser():
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--time-col", required=True)
     parser.add_argument("--value-col", required=True)
+    parser.add_argument("--source-id", help="stable source id used by configured exclusions")
     parser.add_argument("--quality-col")
     parser.add_argument("--valid-quality-flags", nargs="+")
     parser.add_argument("--window-overlap", type=int, default=0)
@@ -132,6 +133,7 @@ def main(argv=None):
         window_overlap=args.window_overlap,
         return_window_metadata=True,
         log_every=args.log_every,
+        source_id=args.source_id,
     )
     stage_durations["window_pipeline"] = perf_counter() - started
     accepted = int(windows["accepted"].sum())
