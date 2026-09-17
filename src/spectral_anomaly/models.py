@@ -24,10 +24,14 @@ class HDBSCANModel:
     def fit_predict(self,x):
         if self.backend=="gpu": from cuml.cluster import HDBSCAN
         else:
-            try: from sklearn.cluster import HDBSCAN
-            except ImportError:
+            if self.params.get("prediction_data"):
                 try: from hdbscan import HDBSCAN
                 except ImportError as exc: raise ImportError("CPU HDBSCAN requires scikit-learn>=1.3 or hdbscan") from exc
+            else:
+                try: from sklearn.cluster import HDBSCAN
+                except ImportError:
+                    try: from hdbscan import HDBSCAN
+                    except ImportError as exc: raise ImportError("CPU HDBSCAN requires scikit-learn>=1.3 or hdbscan") from exc
         self.model=HDBSCAN(**self.params); result=self.model.fit_predict(x)
         return np.asarray(result.get() if hasattr(result,"get") else result,int)
 

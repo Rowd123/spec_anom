@@ -1,0 +1,5 @@
+{
+  "q": 0.001,
+  "initial_quantile": 0.98,
+  "min_excesses": 5
+}
