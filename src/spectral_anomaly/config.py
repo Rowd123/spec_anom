@@ -10,7 +10,7 @@ import pandas as pd
 REQUIRED = {
     "spectral": {"sampling_frequency", "sampling_period", "windowing", "quality",
                  "signal_preprocessing", "representation", "transform", "msst",
-                 "psd", "device", "visualization"},
+                 "ssq_stft", "exclusions", "psd", "device", "visualization"},
     "sam": {"model", "device", "image", "segmentation_mode", "automatic", "energy_contrast", "mask_postprocessing"},
     "models": {"preprocessing", "split", "atypicality", "spot", "hdbscan", "reproducibility"},
 }
@@ -25,8 +25,8 @@ def validate_config(data: Mapping[str, Any], kind: str) -> dict[str, Any]:
     if kind == "spectral":
         if set(result) != REQUIRED["spectral"]:
             raise ValueError(f"unknown spectral configuration section(s): {sorted(set(result) - REQUIRED['spectral'])}")
-        if result["representation"] not in {"stft", "msst"}:
-            raise ValueError("representation must be stft or msst")
+        if result["representation"] not in {"stft", "ssq_stft", "msst"}:
+            raise ValueError("representation must be stft, ssq_stft, or msst")
         frequency = float(result["sampling_frequency"])
         if not frequency > 0:
             raise ValueError("sampling_frequency must be positive")
@@ -47,17 +47,32 @@ def validate_config(data: Mapping[str, Any], kind: str) -> dict[str, Any]:
         if set(preprocessing) != {"remove_mean"} or not isinstance(preprocessing["remove_mean"], bool):
             raise ValueError("signal_preprocessing.remove_mean must be boolean")
         transform = result["transform"]
-        expected_transform = {"window", "window_length", "n_fft", "hop_length", "center", "padtype", "dtype"}
+        expected_transform = {"window", "window_length", "n_fft", "hop_length", "center", "padtype", "dtype", "frequency_min", "frequency_max"}
         if set(transform) != expected_transform:
             raise ValueError("transform configuration has missing or unknown keys")
         if transform["window_length"] > windowing["size"] or transform["n_fft"] < transform["window_length"]:
             raise ValueError("require window_length <= window size and n_fft >= window_length")
+        lower = float(transform["frequency_min"])
+        upper = frequency / 2 if transform["frequency_max"] is None else float(transform["frequency_max"])
+        if not 0 <= lower < upper <= frequency / 2:
+            raise ValueError("frequency range must satisfy 0 <= min < max <= Nyquist")
+        ssq = result["ssq_stft"]
+        if set(ssq) != {"gamma", "squeezing", "batch_size"} or ssq["squeezing"] not in {"sum", "lebesgue"}:
+            raise ValueError("invalid ssq_stft configuration")
+        if not isinstance(ssq["batch_size"], int) or ssq["batch_size"] < 1:
+            raise ValueError("ssq_stft.batch_size must be positive")
+        if ssq["gamma"] is not None and (not np.isfinite(ssq["gamma"]) or ssq["gamma"] < 0):
+            raise ValueError("ssq_stft.gamma must be non-negative or null")
         if result["psd"] != {"scaling": "density", "one_sided": True}:
             raise ValueError("only one-sided density PSD is currently supported")
         if set(result["msst"]) != {"iteration_count", "gamma"}:
             raise ValueError("msst must contain only iteration_count and gamma")
         if result["msst"]["iteration_count"] < 1:
             raise ValueError("msst.iteration_count must be positive")
+        if result["msst"]["gamma"] is not None and (not np.isfinite(result["msst"]["gamma"]) or result["msst"]["gamma"] < 0):
+            raise ValueError("msst.gamma must be non-negative or null")
+        from .exclusions import validate_exclusions
+        result["exclusions"] = validate_exclusions(result["exclusions"])
         if set(result["visualization"]) != {"compare_representations", "output"}:
             raise ValueError("visualization must contain compare_representations and output")
         if not isinstance(result["visualization"]["compare_representations"], bool):

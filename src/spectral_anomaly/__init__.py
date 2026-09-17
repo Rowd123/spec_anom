@@ -4,6 +4,7 @@ from .devices import DeviceSelection, cuda_available, resolve_backend, resolve_d
 from .spectral import (DataFrameSpectralWindow, GEOMETRIC_FEATURES,
                        PHYSICAL_STFT_FEATURES, SpectralResult,
                        analyze_dataframe_windows, analyze_spectrum,
+                       analyze_spectra, spectral_signature,
                        validate_features)
 from .masks import Segment, containment, mask_iou, postprocess_masks
 from .features import (FEATURE_MEANING, SEGMENT_FEATURE_COLUMNS,
@@ -14,10 +15,8 @@ from .spot import SPOT
 from .pipeline import (ModelPipeline, dataframe_to_segments,
                        score_atypicality_splits, train_atypicality, train_models)
 from .segmentation import SAMSegmentationSession, SpectrumSegmentation, segment_spectrum
-from .artifacts import (ArtifactManifest, SCHEMA_VERSION, SCORE_CONVENTION,
-                        build_manifest, read_table, validate_segment_table, write_table)
-from .workflows import (apply_spot, extract_segments, fit_hdbscan, predict_hdbscan,
-                        score_isolation_forest, train_isolation_forest)
+from .exclusions import (excluded_observations, exclusion_signature,
+                         filter_excluded_segments, validate_exclusions)
 
 from .energy import (
     WindowData,
@@ -102,6 +101,7 @@ __all__ = [
     "load_config", "load_configs", "validate_config", "DeviceSelection", "cuda_available",
     "resolve_backend", "resolve_device", "SpectralResult", "DataFrameSpectralWindow",
     "analyze_spectrum", "analyze_dataframe_windows",
+    "analyze_spectra", "spectral_signature",
     "validate_features", "GEOMETRIC_FEATURES", "PHYSICAL_STFT_FEATURES", "Segment",
     "containment", "mask_iou", "postprocess_masks", "FEATURE_MEANING",
     "SEGMENT_FEATURE_COLUMNS",
@@ -110,10 +110,8 @@ __all__ = [
     "load_artifact", "SPOT", "ModelPipeline", "dataframe_to_segments", "train_models",
     "train_atypicality", "score_atypicality_splits",
     "SAMSegmentationSession", "SpectrumSegmentation", "segment_spectrum",
-    "ArtifactManifest", "SCHEMA_VERSION", "SCORE_CONVENTION", "build_manifest",
-    "read_table", "write_table", "validate_segment_table", "extract_segments",
-    "train_isolation_forest", "score_isolation_forest", "fit_hdbscan",
-    "predict_hdbscan", "apply_spot",
+    "excluded_observations", "exclusion_signature", "filter_excluded_segments",
+    "validate_exclusions",
     "COMPONENT_FEATURE_COLUMNS",
     "DEFAULT_LOG1P_FEATURES",
     "CandidateStructure",
