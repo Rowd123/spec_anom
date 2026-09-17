@@ -8,6 +8,8 @@ loaded only when :class:`SAMStructureSegmenter` constructs a predictor.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import nullcontext
+import importlib.util
 from os import PathLike
 from typing import Any, Mapping, Sequence
 
@@ -453,6 +455,7 @@ class SAMStructureSegmenter:
         if selected_device.startswith("cuda") and not torch.cuda.is_available():
             raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
         model = build_sam2(model_config, str(checkpoint), device=selected_device)
+        model.eval()
         self.predictor = SAM2ImagePredictor(model)
         self.device = selected_device
 
@@ -515,7 +518,14 @@ class SAMStructureSegmenter:
         )
 
     def _predict(self, **kwargs: object) -> SAMSegmentationResult:
-        masks, scores, logits = self.predictor.predict(**kwargs)
+        # Official predictors already disable gradients in current SAM 2, but
+        # keeping the public wrapper explicit prevents regressions across versions.
+        context = nullcontext()
+        if importlib.util.find_spec("torch") is not None:
+            import torch
+            context = torch.inference_mode()
+        with context:
+            masks, scores, logits = self.predictor.predict(**kwargs)
         masks_array = np.asarray(masks, dtype=bool)
         scores_array = np.asarray(scores, dtype=float).reshape(-1)
         logits_array = np.asarray(logits)
@@ -560,6 +570,7 @@ class SAMAutomaticMaskSegmenter:
         if selected_device.startswith("cuda") and not torch.cuda.is_available():
             raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
         model = build_sam2(model_config, str(checkpoint), device=selected_device)
+        model.eval()
         self.generator = SAM2AutomaticMaskGenerator(model, **self.options)
         self.device = selected_device
 
@@ -568,7 +579,12 @@ class SAMAutomaticMaskSegmenter:
         values = np.asarray(image)
         if values.ndim != 3 or values.shape[2] != 3 or values.dtype != np.uint8:
             raise ValueError("image must be an H x W x 3 uint8 array")
-        annotations = self.generator.generate(values)
+        context = nullcontext()
+        if importlib.util.find_spec("torch") is not None:
+            import torch
+            context = torch.inference_mode()
+        with context:
+            annotations = self.generator.generate(values)
         if not isinstance(annotations, list):
             raise RuntimeError("SAM automatic mask generator returned a non-list result")
         segments = annotations_to_segments(annotations)
