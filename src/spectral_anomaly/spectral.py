@@ -35,7 +35,10 @@ class SpectralResult:
 
     ``values`` is the representation intended for geometry. ``stft`` is always
     the original STFT and ``psd`` is always derived from it, including in MSST
-    mode. All three arrays share the frequency/time grid exactly.
+    mode. values contains raw complex STFT coefficients, ssqueezepy SST
+    coefficients (configured squeezing), or MSST reassigned coefficients
+    (including its frequency-step factor), never the normalized SAM image.
+    All three arrays share the frequency/time grid exactly.
     """
 
     representation: str
@@ -402,7 +405,8 @@ PHYSICAL_STFT_FEATURES = frozenset({"integrated_energy", "mean_energy_density", 
 
 
 def validate_features(features, representation):
-    unknown = set(features) - GEOMETRIC_FEATURES - PHYSICAL_STFT_FEATURES
+    from .features import FEATURE_MEANING
+    unknown = set(features) - FEATURE_MEANING.keys()
     if unknown:
         raise ValueError(f"unknown feature(s): {sorted(unknown)}")
     return tuple(features)

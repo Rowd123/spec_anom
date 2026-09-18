@@ -231,3 +231,12 @@ son prétraitement ajusté sur l'apprentissage. Les commandes exactes, le contra
 des colonnes, la reprise et les limites GPU/mémoire sont décrits dans
 [`examples/independent_stages.md`](examples/independent_stages.md) et
 [`docs/intermediate_files.md`](docs/intermediate_files.md).
+
+### Select segments by representation energy
+
+Extraction also saves `representation_energy` and
+`mean_representation_energy_density` from the final post-processed mask and the
+raw segmentation representation. Physical STFT/PSD features are unchanged.
+Enable `segment_selection` in the spectral configuration to retain only segments
+whose chosen energy feature is at least `min_energy`, before Parquet/model input.
+See [definitions, configuration and audit](docs/segment_selection.md).

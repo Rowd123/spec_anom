@@ -16,6 +16,7 @@ from .pipeline import ModelPipeline, train_atypicality
 from .preprocessing import FeaturePreprocessor
 from .spot import SPOT
 from .features import FEATURE_MEANING
+from .selection import validate_segment_selection
 from .pipeline import dataframe_to_segments
 
 LOGGER = logging.getLogger(__name__)
@@ -29,11 +30,14 @@ def extract_segments(frame, output_path, spectral_config, sam_config, *, source_
                      channel_id, value_col="value", save_arrays=None, resume=False,
                      automatic_segmenter=None, predictor=None):
     """Run extraction once and persist raw, pre-model features and traceability."""
+    spectral_config = {**spectral_config, "segment_selection":
+                       validate_segment_selection(spectral_config.get("segment_selection", {}))}
     segments, diagnostics, windows = dataframe_to_segments(
         frame, spectral_config, sam_config, value_col=value_col,
         return_window_metadata=True, automatic_segmenter=automatic_segmenter,
-        predictor=predictor,
+        predictor=predictor, source_id=str(source_id),
     )
+    segments = segments.drop(columns=["source_id"], errors="ignore")
     segments.insert(0, "source_id", str(source_id)); segments.insert(1, "channel_id", str(channel_id))
     if len(segments):
         bounds = []
@@ -53,7 +57,15 @@ def extract_segments(frame, output_path, spectral_config, sam_config, *, source_
     features = tuple(name for name in FEATURE_MEANING if name in segments)
     manifest = build_manifest("segments", config={"spectral": spectral_config, "sam": sam_config}, features=features,
                               units={name: FEATURE_MEANING[name] for name in features},
-                              provenance={"source_id": str(source_id), "channel_id": str(channel_id)})
+                              provenance={"source_id": str(source_id), "channel_id": str(channel_id),
+                                          "selection_audit_scope": "current_extraction_call",
+                                          "segment_selection": {
+                                              key: sum(item[key] for item in diagnostics)
+                                              for key in ("number_of_segments_before_selection",
+                                                          "number_of_segments_after_selection",
+                                                          "number_of_segments_rejected_by_energy")},
+                                          "rejected_segments": [record for item in diagnostics
+                                                                for record in item["rejected_segments"]]})
     write_table(segments, output_path, manifest, resume=resume)
     if save_arrays:
         directory = Path(save_arrays); directory.mkdir(parents=True, exist_ok=True)

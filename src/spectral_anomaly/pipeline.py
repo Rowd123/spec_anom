@@ -10,7 +10,8 @@ import numpy as np
 import pandas as pd
 
 from .energy import prepare_analysis_windows
-from .features import segments_to_dataframe
+from .features import segments_to_dataframe, FEATURE_MEANING
+from .selection import select_segments_for_analysis, validate_segment_selection
 from .masks import postprocess_masks
 from .models import AtypicalityModel
 from .preprocessing import FeaturePreprocessor, chronological_split
@@ -53,6 +54,7 @@ def dataframe_to_segments(
     """Run quality-aware window preparation, STFT, SAM, and feature extraction."""
     if not isinstance(log_every, int) or isinstance(log_every, bool) or log_every < 1:
         raise ValueError("log_every must be a positive integer")
+    selection_config = validate_segment_selection(spectral_config.get("segment_selection", {}))
     windowing = spectral_config["windowing"]
     quality = spectral_config["quality"]
     if quality_col is _FROM_CONFIG:
@@ -127,13 +129,13 @@ def dataframe_to_segments(
         )
         start = metadata.loc[window_id, "start_time"]
         end = metadata.loc[window_id, "end_time"]
-        segments_kept += len(final)
-        processed_without_segments += not final
-        rows.append(
-            segments_to_dataframe(
-                final, spectrum, window_id=window_id, window_start=start
-            )
-        )
+        features = segments_to_dataframe(final, spectrum, window_id=window_id, window_start=start)
+        selected, selection_audit = select_segments_for_analysis(features, selection_config)
+        selected_ids = set(selected["segment_id"])
+        retained = [segment for segment in final if segment.segment_id in selected_ids]
+        segments_kept += len(retained)
+        processed_without_segments += not retained
+        rows.append(selected)
         postprocessing_and_features_total += _elapsed(postprocessing_started)
         diagnostics.append(
             {
@@ -142,7 +144,9 @@ def dataframe_to_segments(
                 "sam_image": segmentation.image,
                 "raw_segments": segmentation.raw_segments,
                 "raw_sam_segments": segmentation.raw_sam_segments,
-                "segments": final,
+                "segments": retained,
+                "segments_before_selection": final,
+                **selection_audit,
                 "points": segmentation.points,
                 "contrast": segmentation.contrast,
                 "guided": segmentation.guided,
@@ -169,7 +173,13 @@ def dataframe_to_segments(
                 processed, total, processed, len(metadata) - len(windows),
                 processed_without_segments, segments_kept, elapsed, rate, remaining,
             )
-    segments = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    segments = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=["window_id", "window_start", "segment_id",
+                                                  "source_segment_ids", "merge_count", *FEATURE_MEANING])
+    LOGGER.info(
+        "[segment-selection] segments_before_selection=%d segments_after_selection=%d segments_rejected_energy=%d",
+        sum(item["number_of_segments_before_selection"] for item in diagnostics),
+        len(segments), sum(item["number_of_segments_rejected_by_energy"] for item in diagnostics),
+    )
     if not segments.empty:
         segments["spectral_representation"] = spectral_config["representation"]
         segments["spectral_parameters"] = json.dumps({

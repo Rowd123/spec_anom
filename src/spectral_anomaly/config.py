@@ -23,8 +23,11 @@ def validate_config(data: Mapping[str, Any], kind: str) -> dict[str, Any]:
         raise ValueError(f"missing {kind} configuration section(s): {sorted(missing)}")
     result = dict(data)
     if kind == "spectral":
-        if set(result) != REQUIRED["spectral"]:
-            raise ValueError(f"unknown spectral configuration section(s): {sorted(set(result) - REQUIRED['spectral'])}")
+        allowed = REQUIRED["spectral"] | {"segment_selection"}
+        if set(result) - allowed:
+            raise ValueError(f"unknown spectral configuration section(s): {sorted(set(result) - allowed)}")
+        from .selection import validate_segment_selection
+        result["segment_selection"] = validate_segment_selection(result.get("segment_selection", {}))
         if result["representation"] not in {"stft", "ssq_stft", "msst"}:
             raise ValueError("representation must be stft, ssq_stft, or msst")
         frequency = float(result["sampling_frequency"])

@@ -10,6 +10,7 @@
   "ssq_stft": {"gamma": null, "squeezing": "sum", "batch_size": 8},
   "msst": {"iteration_count": 3, "gamma": null},
   "exclusions": {"events": [], "event_id_column": null, "unknown_id_policy": "warning"},
+  "segment_selection": {"enabled": false, "energy_feature": "representation_energy", "min_energy": null},
   "psd": {"scaling": "density", "one_sided": true},
   "visualization": {"compare_representations": false, "output": "spectral_analysis.html"}
 }

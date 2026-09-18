@@ -21,9 +21,13 @@ SEGMENT_FEATURE_COLUMNS = (
     "temporal_variation",
     "frequency_variation",
     "local_energy_contrast",
+    "representation_energy",
+    "mean_representation_energy_density",
 )
 
 FEATURE_MEANING = {
+    "representation_energy": "sum_squared_modulus_of_representation_coefficients",
+    "mean_representation_energy_density": "mean_squared_modulus_of_representation_coefficients",
     "time_frequency_area": "geometry_seconds_hertz",
     "duration": "geometry_seconds",
     "frequency_width": "geometry_hertz",
@@ -54,12 +58,14 @@ def extract_segment_features(
     """Calculate descriptors from the STFT PSD selected by a SAM mask.
 
     The uint8 SAM image is deliberately unavailable to this function. SAM
-    defines the support only; every power-weighted descriptor uses
+    defines the support only; physical power-weighted descriptors use
     ``spectral.psd`` from the original complex STFT.
+    Representation descriptors use abs(values)**2, before SAM image scaling,
+    without PSD normalization or dt*df integration.
     """
     mask = np.asarray(segment.mask, dtype=bool)
-    if mask.shape != spectral.stft.shape or mask.shape != spectral.psd.shape:
-        raise ValueError("mask, STFT, and PSD shapes must agree")
+    if any(mask.shape != array.shape for array in (spectral.stft, spectral.psd, spectral.values)):
+        raise ValueError("mask, representation, STFT, and PSD shapes must agree")
     rows, columns = np.nonzero(mask)
     base = {
         "window_id": window_id,
@@ -105,7 +111,10 @@ def extract_segment_features(
     background = float(np.median(local_background)) if local_background.size else 0.0
     contrast = mean_density / max(background, np.finfo(float).tiny)
 
+    representation_power = np.abs(np.asarray(spectral.values[mask], dtype=np.complex128)) ** 2
     features = {
+        "representation_energy": float(representation_power.sum()),
+        "mean_representation_energy_density": float(representation_power.mean()),
         "time_frequency_area": float(mask.sum() * pixel_area),
         # Pixel support convention: an occupied bin represents one full dt/df cell.
         "duration": float((columns.max() - columns.min() + 1) * dt),
@@ -131,4 +140,5 @@ def segments_to_dataframe(segments, spectral, **metadata):
     return pd.DataFrame([
         extract_segment_features(segment, spectral, **metadata)
         for segment in segments
-    ])
+    ], columns=["window_id", "window_start", "segment_id", "source_segment_ids",
+                "merge_count", *FEATURE_MEANING])

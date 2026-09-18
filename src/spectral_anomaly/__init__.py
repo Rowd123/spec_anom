@@ -183,3 +183,13 @@ __all__ = [
     "plot_structural_window",
     "transform_component_features",
 ]
+
+from .selection import select_segments_for_analysis, validate_segment_selection
+from .artifacts import SCORE_CONVENTION, build_manifest, read_table, write_table
+from .workflows import (extract_segments, train_isolation_forest, score_isolation_forest,
+                        fit_hdbscan, predict_hdbscan, apply_spot)
+
+__all__ += ["select_segments_for_analysis", "validate_segment_selection",
+            "SCORE_CONVENTION", "build_manifest", "read_table", "write_table",
+            "extract_segments", "train_isolation_forest", "score_isolation_forest",
+            "fit_hdbscan", "predict_hdbscan", "apply_spot"]

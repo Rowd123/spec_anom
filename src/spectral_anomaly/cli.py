@@ -34,7 +34,8 @@ def main(argv=None):
     args = parser().parse_args(argv); logging.basicConfig(level=getattr(logging, args.log_level.upper()), format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if args.command == "extract":
         frame = pd.read_csv(args.input); frame.index = pd.to_datetime(frame.pop(args.index_col), utc=True)
-        return extract_segments(frame, args.output, load_config(args.spectral_config, "spectral"), load_config(args.sam_config, "sam"), source_id=args.source_id, channel_id=args.channel_id, value_col=args.value_col, save_arrays=args.save_arrays, resume=args.resume)
+        extract_segments(frame, args.output, load_config(args.spectral_config, "spectral"), load_config(args.sam_config, "sam"), source_id=args.source_id, channel_id=args.channel_id, value_col=args.value_col, save_arrays=args.save_arrays, resume=args.resume)
+        return None  # Console entry points must not pass a DataFrame to sys.exit.
     if args.command == "train-iforest": return train_isolation_forest(args.segments, args.model, load_config(args.config, "models"))
     if args.command == "score-iforest": return score_isolation_forest(args.segments, args.model, args.output, batch_size=args.batch_size, resume=args.resume)
     if args.command == "fit-hdbscan": return fit_hdbscan(args.segments, args.model, args.output, load_config(args.config, "models"))
