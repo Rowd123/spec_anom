@@ -1,0 +1,25 @@
+{
+  "sampling_frequency": 50.0,
+  "sampling_period": "20ms",
+  "windowing": {
+    "size": 3000,
+    "overlap": 1500
+  },
+  "quality": {
+    "quality_column": null,
+    "valid_flags": null,
+    "min_valid_fraction": 0.9,
+    "max_interpolation_gap": 3
+  },
+  "exclusions": {
+    "events": [],
+    "event_id_column": null,
+    "unknown_id_policy": "warning"
+  },
+  "normalization": {
+    "V1.MAG": {
+      "mu": null,
+      "sigma": null
+    }
+  }
+}

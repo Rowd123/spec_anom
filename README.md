@@ -240,3 +240,13 @@ raw segmentation representation. Physical STFT/PSD features are unchanged.
 Enable `segment_selection` in the spectral configuration to retain only segments
 whose chosen energy feature is at least `min_energy`, before Parquet/model input.
 See [definitions, configuration and audit](docs/segment_selection.md).
+
+## Expérience avec caractéristiques par fenêtre
+
+Une alternative configurable à SAM est disponible avec `prepare-windows`,
+`extract-windows` et `split-windows`. Les étapes sauvegardent leurs artefacts et
+réutilisent les commandes IF/HDBSCAN/SPOT existantes. La sélection des
+caractéristiques par modèle est indépendante de l'extraction.
+Voir [les paramètres et commandes de l'expérience](docs/window_experiment.md).
+Les constantes de normalisation doivent être renseignées explicitement dans
+`configs/window_preprocessing.json`.

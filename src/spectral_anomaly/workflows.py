@@ -13,7 +13,7 @@ from .artifacts import (SCORE_CONVENTION, build_manifest, fingerprint, read_tabl
                         validate_segment_table, write_table)
 from .models import HDBSCANModel, load_artifact, save_artifact
 from .pipeline import ModelPipeline, train_atypicality
-from .preprocessing import FeaturePreprocessor
+from .preprocessing import FeaturePreprocessor, selected_features
 from .spot import SPOT
 from .features import FEATURE_MEANING
 from .selection import validate_segment_selection
@@ -77,12 +77,18 @@ def extract_segments(frame, output_path, spectral_config, sam_config, *, source_
 
 
 def train_isolation_forest(segments_path, model_path, config):
-    frame, source = read_table(segments_path, expected_type="segments")
-    features = tuple(config["preprocessing"]["atypicality_features"])
+    frame, source = _read_observations(segments_path)
+    features = selected_features(config["preprocessing"], "atypicality", source.feature_columns)
     validate_segment_table(frame, features)
     started = perf_counter()
+    if source.artifact_type == "window_features":
+        config = {**config, "split": {**config["split"], "purge_overlap": True}}
+    if source.provenance.get("split") == "train":
+        # The persisted train partition is already split: use all of it.
+        config = {**config, "split": {**config["split"], "train_fraction": 1.0,
+                                    "calibration_fraction": 0.0, "evaluation_fraction": 0.0}}
     pipeline, splits = train_atypicality(frame, config)
-    preprocessing_id = _artifact_id("prep", {"features": features, "center": pipeline.anomaly_preprocessor.center_.tolist(), "scale": pipeline.anomaly_preprocessor.scale_.tolist()})
+    preprocessing_id = _artifact_id("prep", {"features": features, "log1p": pipeline.anomaly_preprocessor.log1p, "method": pipeline.anomaly_preprocessor.method, "center": pipeline.anomaly_preprocessor.center_.tolist(), "scale": pipeline.anomaly_preprocessor.scale_.tolist()})
     model_id = _artifact_id("iforest", {"config": config["atypicality"], "preprocessing_id": preprocessing_id, "nonce": uuid.uuid4().hex})
     artifact = {"kind": "isolation_forest", "schema_version": "1.0", "model_id": model_id,
                 "preprocessing_id": preprocessing_id, "score_convention": SCORE_CONVENTION,
@@ -94,7 +100,7 @@ def train_isolation_forest(segments_path, model_path, config):
 
 
 def score_isolation_forest(segments_path, model_path, output_path, *, batch_size=65536, resume=False):
-    frame, source = read_table(segments_path, expected_type="segments")
+    frame, source = _read_observations(segments_path)
     artifact = load_artifact(model_path)
     features = tuple(artifact["feature_columns"])
     validate_segment_table(frame, features)
@@ -117,8 +123,8 @@ def score_isolation_forest(segments_path, model_path, output_path, *, batch_size
 
 
 def fit_hdbscan(segments_path, model_path, output_path, config):
-    frame, source = read_table(segments_path, expected_type="segments")
-    features = tuple(config["preprocessing"]["hdbscan_features"])
+    frame, source = _read_observations(segments_path)
+    features = selected_features(config["preprocessing"], "hdbscan", source.feature_columns)
     validate_segment_table(frame, features)
     prep = FeaturePreprocessor(features, tuple(x for x in config["preprocessing"].get("log1p", ()) if x in features), config["preprocessing"].get("scaling", "robust"))
     matrix = prep.fit_transform(frame)
@@ -127,9 +133,9 @@ def fit_hdbscan(segments_path, model_path, output_path, config):
     labels = model.fit_predict(matrix)
     strengths = getattr(model.model, "probabilities_", np.full(len(labels), np.nan))
     strengths = np.asarray(strengths.get() if hasattr(strengths, "get") else strengths, float)
-    preprocessing_id = _artifact_id("prep", {"features": features, "center": prep.center_.tolist(), "scale": prep.scale_.tolist()})
+    preprocessing_id = _artifact_id("prep", {"features": features, "log1p": prep.log1p, "method": prep.method, "center": prep.center_.tolist(), "scale": prep.scale_.tolist()})
     model_id = _artifact_id("hdbscan", {"config": options, "preprocessing_id": preprocessing_id, "nonce": uuid.uuid4().hex})
-    artifact = {"kind": "hdbscan", "schema_version": "1.0", "model_id": model_id, "preprocessing_id": preprocessing_id, "feature_columns": features, "preprocessor": prep, "model": model, "config": config}
+    artifact = {"kind": "hdbscan", "schema_version": "1.0", "model_id": model_id, "preprocessing_id": preprocessing_id, "feature_columns": features, "preprocessor": prep, "model": model, "config": config, "source_config_hash": source.config_hash}
     save_artifact(artifact, model_path)
     result = frame[[c for c in frame if c.endswith("_id") or c in {"window_start", "time_start"}]].copy()
     result["model_id"] = model_id; result["cluster_label"] = labels; result["is_noise"] = labels == -1; result["membership_strength"] = strengths
@@ -138,7 +144,10 @@ def fit_hdbscan(segments_path, model_path, output_path, config):
 
 
 def predict_hdbscan(segments_path, model_path, output_path):
-    frame, _ = read_table(segments_path, expected_type="segments"); artifact = load_artifact(model_path)
+    frame, source = _read_observations(segments_path); artifact = load_artifact(model_path)
+    validate_segment_table(frame, artifact["feature_columns"])
+    if source.artifact_type == "window_features" and source.config_hash != artifact.get("source_config_hash"):
+        raise ValueError("window feature configuration differs from fitted HDBSCAN")
     matrix = artifact["preprocessor"].transform(frame); model = artifact["model"].model
     try:
         from hdbscan import approximate_predict
@@ -174,3 +183,10 @@ def apply_spot(calibration_path, scores_path, output_path, state_path, config, *
     write_table(result, output_path, build_manifest("spot_decisions", config={**config, "series_columns": list(series_columns), "update_policy": "fixed"}, provenance={"calibration": str(calibration_path), "scores": str(scores_path)}, model_id=sm.model_id, preprocessing_id=sm.preprocessing_id, score_convention=sm.score_convention), resume=resume)
     save_artifact({"states": states, "last_keys": result[[c for c in order if c in result]].tail(1).to_dict("records"), "compatibility": compatibility}, state_path)
     return result
+
+
+def _read_observations(path):
+    frame, manifest = read_table(path)
+    if manifest.artifact_type not in {"segments", "window_features"}:
+        raise ValueError("models require segments or window_features artifacts")
+    return frame, manifest

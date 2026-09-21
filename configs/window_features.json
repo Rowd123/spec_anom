@@ -1,0 +1,58 @@
+{
+  "statistics": [
+    "minimum",
+    "maximum",
+    "mean",
+    "variance",
+    "median",
+    "iqr",
+    "skewness",
+    "kurtosis"
+  ],
+  "variance_ddof": 0,
+  "moment_bias": true,
+  "undefined_policy": "zero",
+  "variance_epsilon": 1e-24,
+  "differences": [],
+  "spectral": {
+    "enabled": true,
+    "bands_hz": [
+      [
+        0.05,
+        0.15
+      ],
+      [
+        0.15,
+        0.4
+      ],
+      [
+        0.4,
+        1
+      ],
+      [
+        1,
+        2
+      ]
+    ],
+    "window": "hann",
+    "detrend": false,
+    "nfft": null,
+    "top_changes": 2
+  },
+  "temporal": {
+    "lags_seconds": [
+      0.1,
+      0.5,
+      1,
+      2
+    ],
+    "changes": true
+  },
+  "history": {
+    "size": 10,
+    "min_windows": 3,
+    "warmup": "drop",
+    "reset_after_gap_seconds": null
+  },
+  "log_every": 100
+}

@@ -14,7 +14,7 @@ from .features import segments_to_dataframe, FEATURE_MEANING
 from .selection import select_segments_for_analysis, validate_segment_selection
 from .masks import postprocess_masks
 from .models import AtypicalityModel
-from .preprocessing import FeaturePreprocessor, chronological_split
+from .preprocessing import FeaturePreprocessor, chronological_split, selected_features
 from .segmentation import SAMSegmentationSession
 from .spectral import analyze_spectra, validate_features
 from .spectral import spectral_signature
@@ -240,6 +240,7 @@ class ModelPipeline:
     atypicality: AtypicalityModel
     spectral_signature: str | None = None
     exclusion_signature: str | None = None
+    window_feature_signature: str | None = None
 
     def score_atypicality(self, frame):
         """Return raw ``-score_samples`` values (higher means more atypical)."""
@@ -252,7 +253,8 @@ class ModelPipeline:
 
     def _validate_compatibility(self, frame):
         for column, expected in (("spectral_signature", self.spectral_signature),
-                                 ("exclusion_signature", self.exclusion_signature)):
+                                 ("exclusion_signature", self.exclusion_signature),
+                                 ("window_feature_signature", getattr(self, "window_feature_signature", None))):
             if expected is None: continue
             if column not in frame or set(frame[column].dropna().astype(str)) != {expected}:
                 raise ValueError(f"scoring data has incompatible {column}")
@@ -268,9 +270,9 @@ def train_atypicality(frame, config):
     """Fit preprocessing and Isolation Forest on train windows only."""
     train, calibration, evaluation = chronological_split(frame, config["split"])
     preprocessing = config["preprocessing"]
-    features = tuple(preprocessing["atypicality_features"])
+    features = selected_features(preprocessing, "atypicality", frame.columns)
     signatures = {}
-    for column in ("spectral_signature", "exclusion_signature"):
+    for column in ("spectral_signature", "exclusion_signature", "window_feature_signature"):
         if column in train:
             values = set(train[column].dropna().astype(str))
             if len(values) != 1: raise ValueError(f"training data mixes incompatible {column} values")
@@ -281,7 +283,11 @@ def train_atypicality(frame, config):
     LOGGER.info("[split] features=%s", list(features))
     for name, split in zip(("train", "calibration", "evaluation"), (train, calibration, evaluation)):
         LOGGER.info("[split] partition=%s windows=%d segments=%d", name, _window_count(split), len(split))
-    validate_features(features, next(iter(representations)))
+    if "observation_kind" in frame and set(frame["observation_kind"]) == {"window"}:
+        if any(not name.startswith("wf_") for name in features):
+            raise ValueError("window models require extracted wf_ features")
+    else:
+        validate_features(features, next(iter(representations)))
     if train.empty:
         raise ValueError("the chronological train split contains no segments")
     for name, split in (
@@ -310,7 +316,7 @@ def train_atypicality(frame, config):
     ).fit(transformed_train)
     LOGGER.info("[isolation-forest-fit] finished in %.3fs resolved_backend=%s", _elapsed(fit_started), atypicality.backend)
     return ModelPipeline(preprocessor, atypicality, signatures.get("spectral_signature"),
-                         signatures.get("exclusion_signature")), (train, calibration, evaluation)
+                         signatures.get("exclusion_signature"), signatures.get("window_feature_signature")), (train, calibration, evaluation)
 
 
 def score_atypicality_splits(pipeline, splits):

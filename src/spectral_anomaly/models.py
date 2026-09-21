@@ -1,6 +1,7 @@
 """Interchangeable CPU sklearn and genuine GPU cuML model backends."""
 from __future__ import annotations
 import pickle
+from pathlib import Path
 import numpy as np
 from .devices import resolve_backend
 
@@ -36,6 +37,7 @@ class HDBSCANModel:
         return np.asarray(result.get() if hasattr(result,"get") else result,int)
 
 def save_artifact(value,path):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path,"wb") as stream: pickle.dump(value,stream)
 def load_artifact(path):
     with open(path,"rb") as stream: return pickle.load(stream)
