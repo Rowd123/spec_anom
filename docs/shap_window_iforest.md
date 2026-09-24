@@ -57,6 +57,8 @@ For **every** explained observation, analysis checks:
 base_value + sum(feature SHAP) ~= ModelPipeline.score_atypicality(observation)
 ```
 
+The masker skips model evaluations only for **exactly equal** raw values. The default SHAP `np.isclose` shortcut can hide small feature changes that become significant after saved scaling or cross tree thresholds; this can break baseline/score reconstruction. Exact equality fixes that shortcut without changing the score or relaxing the check.
+
 The tolerance is `atol=1e-8, rtol=1e-6`; failure raises an error before results are saved. The baseline is also checked against the mean pipeline score of the sampled background. A positive contribution increases atypicality relative to that background; this is not a probability or proof of a physical anomaly.
 
 The function being explained is exact, but individual Shapley values are Monte Carlo approximations. Additivity does not prove their convergence. Increase `--permutations` and compare seeds to assess stability. Each observation has an evaluation budget of `permutations * (2 * feature_count + 1)` masks, each potentially evaluated over the background. Large backgrounds and many windows can be expensive.

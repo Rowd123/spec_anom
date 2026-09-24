@@ -106,7 +106,18 @@ def explain(artifact, train, observations, *, background_size=100, permutations=
         frame = pd.DataFrame(raw, columns=features)
         return pipeline.atypicality.score(pipeline.anomaly_preprocessor.transform(frame))
 
-    masker = shap.maskers.Independent(background[features].to_numpy(float), max_samples=len(background))
+    class ExactIndependent(shap.maskers.Independent):
+        """Skip evaluations only for exactly equal raw feature values.
+
+        SHAP's default np.isclose can hide differences amplified by saved
+        scaling or crossing an Isolation Forest split, breaking additivity.
+        """
+        def invariants(self, x):
+            if x.shape != self.data.shape[1:]:
+                raise ValueError("SHAP input shape differs from background feature shape")
+            return np.equal(x, self.data)
+
+    masker = ExactIndependent(background[features].to_numpy(float), max_samples=len(background))
     explainer = shap.PermutationExplainer(score, masker, feature_names=features,
                                         link=shap.links.identity, seed=seed)
     explanation = explainer(selected[features].to_numpy(float),
@@ -209,7 +220,8 @@ def main(argv=None):
         "background_size", "permutations", "seed", "batch_size", "top_n", "window_id", "date", "source_id", "channel_id")})
     save_results(args.output, *outputs, provenance={**vars(args), "model_id": artifact["model_id"],
                  "preprocessing_id": artifact["preprocessing_id"], "score_convention": SCORE_CONVENTION,
-                 "method": "PermutationExplainer(identity)", "background_partition": "train"})
+                 "method": "PermutationExplainer(identity)", "masker_invariants": "exact_equality",
+                 "background_partition": "train"})
 
 
 if __name__ == "__main__":

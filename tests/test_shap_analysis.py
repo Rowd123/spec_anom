@@ -154,3 +154,21 @@ def test_constant_feature_and_single_window(data):
                                       background_size=4, permutations=1)
     assert explanation.values[0, list(explanation.feature_names).index("wf_mean")] == 0
     assert abs(result.additivity_error.iloc[0]) < 1e-8
+
+
+@pytest.mark.parametrize("all_features", [False, True])
+def test_near_equal_raw_features_keep_exact_additivity(data, all_features):
+    # np.isclose on raw inputs hides small changes amplified by saved scaling.
+    artifact, train, evaluation = data
+    features = list(artifact['feature_columns'])
+    close_features = features if all_features else ['wf_mean']
+    for frame in (train, evaluation):
+        frame[close_features] = 1.0 + 1e-7 * frame[close_features]
+    pipeline = artifact['pipeline']
+    pipeline.anomaly_preprocessor.fit(train)
+    pipeline.atypicality.fit(pipeline.anomaly_preprocessor.transform(train))
+    explanation, result, _, background, _ = explain(
+        artifact, train, evaluation, background_size=8, permutations=2)
+    assert np.isclose(evaluation[close_features].iloc[0].to_numpy(), background[close_features].to_numpy()).all()
+    assert np.abs(explanation.values).max() > 1e-6
+    np.testing.assert_allclose(result.reconstructed_score, result.score, atol=1e-8, rtol=1e-6)
