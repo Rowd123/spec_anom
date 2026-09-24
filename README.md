@@ -250,3 +250,7 @@ caractéristiques par modèle est indépendante de l'extraction.
 Voir [les paramètres et commandes de l'expérience](docs/window_experiment.md).
 Les constantes de normalisation doivent être renseignées explicitement dans
 `configs/window_preprocessing.json`.
+
+### SHAP for a saved window Isolation Forest
+
+Use `spectral-anomaly-shap` to explain the exact `-score_samples` output after saved preprocessing, without retraining. See [commands, input contracts, outputs and validation](docs/shap_window_iforest.md).

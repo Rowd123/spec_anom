@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+shap = ["shap>=0.46", "matplotlib>=3.7", "pyarrow>=14"]
 # SAM 2 itself is installed from Meta's repository; this extra documents the
 # local PyTorch prerequisite without making the experiment mandatory.
 sam = ["torch>=2.5"]
@@ -28,6 +29,7 @@ hdbscan = ["hdbscan>=0.8.33"]
 
 [project.scripts]
 spectral-anomaly = "spectral_anomaly.cli:main"
+spectral-anomaly-shap = "spectral_anomaly.shap_analysis:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
