@@ -186,6 +186,34 @@ choisis ; aucun changement silencieux de seuil ou de paramètres n'est effectué
 
 ## Contrats et vérification
 
+### Retracer le signal avec les fenêtres détectées (Plotly)
+
+Après `spot`, tracer le CSV d'origine et les décisions sauvegardées :
+
+```bash
+spectral-anomaly plot-spot measurements.csv artifacts/window_anomalies.parquet \
+  artifacts/window_spot.html \
+  --index-col DATE_MESURE --value-col VIGY_1:VA_V1:MAG \
+  --source-id VIGY_1 --channel-id V1.MAG --sep ';'
+```
+
+Adapter le CSV, le séparateur et les identifiants à ceux de `prepare-windows`.
+`--datetime-format` fonctionne comme dans cette commande. Ouvrir le fichier HTML
+dans un navigateur : Plotly est inclus, aucune connexion Internet n'est nécessaire.
+Zoom, déplacement, légende et téléchargement SVG sont disponibles.
+
+Le panneau supérieur affiche le signal brut dans ses unités d'origine, avec un
+fond rouge sur toute la durée des fenêtres détectées. Les zones rouges qui se
+chevauchent sont fusionnées pour garder une opacité constante : une seule fenêtre
+détectée suffit à colorer la zone. Une zone sans rouge n'est pas nécessairement
+normale : elle peut n'avoir aucune fenêtre évaluée (calibration, qualité, etc.).
+Les bornes viennent de `window_start` et `window_end`, dernier échantillon inclus.
+Le panneau inférieur montre les scores IF, le seuil SPOT et les alarmes, placés
+en fin de fenêtre ; les infobulles donnent l'identifiant et les bornes de chaque
+fenêtre. Les scores ne sont pas des probabilités. Le tracé ne réentraîne aucun
+modèle et ne modifie aucune décision. SPOT reste la calibration POT à seuil fixe
+déjà utilisée dans ce dépôt.
+
 `prepared_windows` et `window_features` sont des types d'artefacts distincts des
 segments SAM. Pour réutiliser la traçabilité des modèles, une fenêtre porte
 `segment_id=0`, `observation_kind=window`, des bornes temporelles couvrant la fenêtre

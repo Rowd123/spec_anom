@@ -27,6 +27,11 @@ def parser():
     fit = commands.add_parser("fit-hdbscan"); fit.add_argument("segments"); fit.add_argument("model"); fit.add_argument("output"); fit.add_argument("--config", required=True)
     predict = commands.add_parser("predict-hdbscan"); predict.add_argument("segments"); predict.add_argument("model"); predict.add_argument("output")
     spot = commands.add_parser("spot"); spot.add_argument("calibration"); spot.add_argument("scores"); spot.add_argument("output"); spot.add_argument("state"); spot.add_argument("--config", required=True); spot.add_argument("--resume", action="store_true")
+    plot = commands.add_parser("plot-spot", help="Plot original CSV and saved SPOT window decisions")
+    plot.add_argument("input"); plot.add_argument("decisions"); plot.add_argument("output")
+    plot.add_argument("--source-id", required=True); plot.add_argument("--channel-id", required=True)
+    plot.add_argument("--value-col", default="value"); plot.add_argument("--index-col", default="time")
+    plot.add_argument("--sep", default=","); plot.add_argument("--datetime-format", default="ISO8601")
     prepare = commands.add_parser("prepare-windows")
     prepare.add_argument("input"); prepare.add_argument("output"); prepare.add_argument("--config", required=True)
     prepare.add_argument("--source-id", required=True); prepare.add_argument("--channel-id", required=True)
@@ -42,6 +47,14 @@ def parser():
 
 def main(argv=None):
     args = parser().parse_args(argv); logging.basicConfig(level=getattr(logging, args.log_level.upper()), format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    if args.command == "plot-spot":
+        from .spot_plot import export_spot_plot
+        output = export_spot_plot(args.input, args.decisions, args.output,
+                                 source_id=args.source_id, channel_id=args.channel_id,
+                                 value_col=args.value_col, index_col=args.index_col,
+                                 sep=args.sep, datetime_format=args.datetime_format)
+        logging.info("Plotly report: %s", output)
+        return None
     if args.command in {"prepare-windows", "extract-windows", "split-windows"}:
         from .window_features import prepare_windows, extract_window_features, split_window_features
         config = _json(args.config)
